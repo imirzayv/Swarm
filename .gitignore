@@ -1,0 +1,45 @@
+# --- VS Code & IDEs ---
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.code-workspace
+.history/
+*.db
+*.db-shm
+*.db-wal
+
+# --- Compiled Binaries & Build Folders ---
+build/
+install/
+log/
+bin/
+obj/
+*.elf
+*.bin
+*.px4
+*.so
+*.o
+
+# --- Python & AI ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+env/
+venv/
+.env
+
+# --- Drone Logs & Large Data ---
+*.ulg
+*.txt
+*.csv
+# Only ignore data/logs if they are large; keep small config txts
+# data/
+# logs/
+
+# --- System Files ---
+.DS_Store
+Thumbs.db
