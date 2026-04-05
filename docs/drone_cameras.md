@@ -119,6 +119,7 @@ sudo apt install ros-humble-ros-gz-bridge
 
 ```bash
 gz topic -l | grep image
+gz topic -e -t /world/default/model/x500_mono_cam_down_1/link/camera_link/sensor/imager/image
 ```
 
 Topics follow this pattern:
@@ -216,6 +217,14 @@ sudo apt install ros-humble-rqt-image-view   # if not installed
 ros2 run rqt_image_view rqt_image_view
 # Select topic from the dropdown: /drone1/camera/image_raw
 ```
+
+
+If i remember correctly, if you have humble and GZ_VERSION=harmonic you have to:
+
+Delete previous gz_sim installation
+Install gz_sim using: sudo apt-get install ros-humble-ros-gzharmonic
+Source everything again
+And it should work.
 
 ### RViz2
 

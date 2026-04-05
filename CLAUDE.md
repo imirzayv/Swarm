@@ -6,6 +6,44 @@
 
 ---
 
+## Chosen Topic & Current Status
+
+**Selected:** Topic A — Vision-Guided Adaptive Area Monitoring with Drone Swarms
+**Target Venue:** MDPI Drones (open access, fast review)
+**Timeline:** 5 weeks from 2026-04-04 to 2026-05-05 (2–3 hrs/day)
+**Detailed Plan:** See `adaptive_area_monitoring.md`
+**Progress:** See `docs/progress_report.md`
+
+### Current Phase: Week 2 (Robustness + Dry Runs + Literature Review)
+
+**Week 1 (Days 4–10) — COMPLETED:**
+- Custom ROS 2 messages (`swarm_msgs`: Detection, TargetWaypoint)
+- Detection publisher (YOLOv8 → `/droneN/detection` with world-position estimation)
+- Waypoint executor (MAVSDK subscriber → `/droneN/target_waypoint`)
+- Voronoi coordinator (weighted Voronoi + Lloyd's + Gaussian density map)
+- Data logger (positions/detections/waypoints → CSV)
+- Metrics computation (coverage %, redundancy, energy, detection latency)
+- Three baselines (static grid, lawnmower, random waypoints)
+- Experiment automation (`run_experiment.sh`, `run_all_experiments.sh`)
+
+**Week 2 (Days 11–17) — IN PROGRESS:**
+- 5-drone support + parameterized target spawning
+- Edge case handling + parameter tuning
+- Dry runs of all 4 experiments (E1–E4)
+- Literature review (20 papers)
+
+**Remaining:**
+- Week 3: Full experiments (~80 trials)
+- Week 4: Paper writing (technical sections)
+- Week 5: Paper completion + submission
+
+### Python Environment
+
+Use `conda activate swarm` (Python 3.10) for all scripts. ROS 2 Humble requires
+Python 3.10; the `myenv` conda env (Python 3.11) is incompatible with `rclpy`.
+
+---
+
 ## Phase 0 — Project Scoping & Environment Setup (Week 1–2)
 
 **Goal:** Decide your paper topic, set up your machine, and get a baseline simulation running.
@@ -433,4 +471,4 @@ Below are **six candidate topics** ranked by feasibility and novelty. Each is de
 
 ---
 
-*Last updated: March 2026*
+*Last updated: April 2026*

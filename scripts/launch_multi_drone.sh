@@ -8,7 +8,7 @@
 #   ./launch_multi_drone.sh 2 x500_mono_cam_down  → 2x x500 with downward camera
 
 NUM_DRONES=${1:-3}
-MODEL=${2:-x500}
+MODEL=${2:-x500_mono_cam_down}
 PX4_DIR="$HOME/Desktop/Swarm/firmware"
 SPACING=3  # meters between drones (Y axis)
 
