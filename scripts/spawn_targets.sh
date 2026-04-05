@@ -1,161 +1,127 @@
 #!/bin/bash
-# Day 3 Task: Spawn colored target objects into a running Gazebo world.
+# Spawn target objects into a running Gazebo world for drone detection.
 #
-# These are simple colored box/cylinder/sphere primitives placed on the ground
-# so drones can detect them from above with YOLOv8.
+# Uses realistic 3D models from Gazebo Fuel that are recognizable by
+# YOLOv8 (COCO dataset classes: car, truck, bus).
+#
+# Models are downloaded from Gazebo Fuel on first run and cached in ~/.gz/fuel/.
 #
 # Usage:
-#   ./spawn_targets.sh              # spawns default set of targets
-#   ./spawn_targets.sh <world_name> # specify Gazebo world name (default: "default")
+#   ./spawn_targets.sh                    # spawn default 5 targets
+#   ./spawn_targets.sh <world_name>       # specify world name
+#   ./spawn_targets.sh swarm_default 10   # spawn 10 targets
 #
 # Requires: gz sim running (launched by launch_multi_drone.sh)
 
-WORLD=${1:-default}
+WORLD=${1:-swarm_default}
+NUM_TARGETS=${2:-5}
 
-echo "=== Spawning target objects into Gazebo world: $WORLD ==="
+echo "=== Spawning $NUM_TARGETS target objects into Gazebo world: $WORLD ==="
 
-# Helper: spawn a model from an SDF file via gz service
-spawn_model() {
+# ── Download models from Gazebo Fuel (cached after first download) ──────────
+FUEL_BASE="https://fuel.gazebosim.org/1.0/OpenRobotics/models"
+
+download_if_needed() {
+    local model_name=$1
+    local cache_dir="$HOME/.gz/fuel/fuel.gazebosim.org/openrobotics/models/$(echo "$model_name" | tr '[:upper:]' '[:lower:]')"
+    if [ ! -d "$cache_dir" ]; then
+        echo "[Download] $model_name from Gazebo Fuel..."
+        gz fuel download -u "$FUEL_BASE/$model_name" > /dev/null 2>&1
+    fi
+}
+
+echo "Checking Fuel model cache..."
+download_if_needed "SUV"
+download_if_needed "Hatchback red"
+download_if_needed "Hatchback blue"
+download_if_needed "Pickup"
+download_if_needed "Prius Hybrid"
+download_if_needed "Bus"
+download_if_needed "Hatchback"
+echo "Models ready."
+
+# ── Fuel model URIs (Gazebo resolves these from the local cache) ────────────
+MODELS=(
+    "https://fuel.gazebosim.org/1.0/OpenRobotics/models/SUV"
+    "https://fuel.gazebosim.org/1.0/OpenRobotics/models/Hatchback red"
+    "https://fuel.gazebosim.org/1.0/OpenRobotics/models/Hatchback blue"
+    "https://fuel.gazebosim.org/1.0/OpenRobotics/models/Pickup"
+    "https://fuel.gazebosim.org/1.0/OpenRobotics/models/Prius Hybrid"
+    "https://fuel.gazebosim.org/1.0/OpenRobotics/models/Bus"
+    "https://fuel.gazebosim.org/1.0/OpenRobotics/models/Hatchback"
+)
+
+# Human-readable names for logging
+MODEL_NAMES=(
+    "suv"
+    "hatchback_red"
+    "hatchback_blue"
+    "pickup"
+    "prius"
+    "bus"
+    "hatchback"
+)
+
+# ── Predefined target positions ─────────────────────────────────────────────
+# Spread across a 200x200m monitoring area (-100 to +100).
+# Targets are far from each other (~40-60m apart) and from the drone
+# start point (origin 0,0). Positions are in local XY (meters).
+# Yaw values (radians) to vary orientation for more realistic appearance.
+POS_X=(  70  -80   50  -60   85  -75  -20   40  -50   65 )
+POS_Y=( -60   70   80  -50  -30   20  -85   45   55  -75 )
+POS_YAW=( 0  1.57 0.78 2.35 1.05 3.14 0.52 1.83 2.62 0.39 )
+
+# ── Temp directory for SDF files (cleaned up on exit) ───────────────────────
+TMPDIR=$(mktemp -d)
+trap "rm -rf $TMPDIR" EXIT
+
+# ── Spawn helper ────────────────────────────────────────────────────────────
+spawn_fuel_model() {
     local NAME=$1
     local X=$2
     local Y=$3
     local Z=$4
-    local SDF_FILE=$5
+    local YAW=$5
+    local FUEL_URI=$6
 
-    echo "[Spawn] $NAME at ($X, $Y, $Z)"
+    echo "[Spawn] $NAME at ($X, $Y, $Z) yaw=$YAW"
+
+    # Create a minimal SDF that includes the Fuel model
+    local TMPFILE="$TMPDIR/${NAME}.sdf"
+    cat > "$TMPFILE" <<SDEOF
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <include>
+    <uri>$FUEL_URI</uri>
+    <static>true</static>
+  </include>
+</sdf>
+SDEOF
 
     gz service -s /world/${WORLD}/create \
         --reqtype gz.msgs.EntityFactory \
         --reptype gz.msgs.Boolean \
         --timeout 5000 \
-        --req "sdf_filename: '${SDF_FILE}', name: '${NAME}', pose: {position: {x: ${X}, y: ${Y}, z: ${Z}}}"
+        --req "sdf_filename: '${TMPFILE}', name: '${NAME}', pose: {position: {x: ${X}, y: ${Y}, z: ${Z}}, orientation: {x: 0, y: 0, z: $(echo "s($YAW/2)" | bc -l), w: $(echo "c($YAW/2)" | bc -l)}}"
 }
 
-# Create a temp directory for SDF files
-TMPDIR=$(mktemp -d)
-trap "rm -rf $TMPDIR" EXIT
+# ── Spawn targets ──────────────────────────────────────────────────────────
+NUM_MODELS=${#MODELS[@]}
 
-# ── Target 1: Red box (simulates a person / vehicle from above) ──────────────
-cat > "$TMPDIR/red_box.sdf" <<'EOF'
-<?xml version="1.0"?>
-<sdf version="1.9">
-  <model name="red_box">
-    <static>true</static>
-    <link name="link">
-      <visual name="visual">
-        <geometry><box><size>1.0 0.5 0.8</size></box></geometry>
-        <material>
-          <ambient>0.8 0.1 0.1 1</ambient>
-          <diffuse>0.9 0.1 0.1 1</diffuse>
-        </material>
-      </visual>
-      <collision name="collision">
-        <geometry><box><size>1.0 0.5 0.8</size></box></geometry>
-      </collision>
-    </link>
-  </model>
-</sdf>
-EOF
-
-# ── Target 2: Blue cylinder ──────────────────────────────────────────────────
-cat > "$TMPDIR/blue_cylinder.sdf" <<'EOF'
-<?xml version="1.0"?>
-<sdf version="1.9">
-  <model name="blue_cylinder">
-    <static>true</static>
-    <link name="link">
-      <visual name="visual">
-        <geometry><cylinder><radius>0.4</radius><length>1.0</length></cylinder></geometry>
-        <material>
-          <ambient>0.1 0.1 0.8 1</ambient>
-          <diffuse>0.1 0.1 0.9 1</diffuse>
-        </material>
-      </visual>
-      <collision name="collision">
-        <geometry><cylinder><radius>0.4</radius><length>1.0</length></cylinder></geometry>
-      </collision>
-    </link>
-  </model>
-</sdf>
-EOF
-
-# ── Target 3: Green sphere ──────────────────────────────────────────────────
-cat > "$TMPDIR/green_sphere.sdf" <<'EOF'
-<?xml version="1.0"?>
-<sdf version="1.9">
-  <model name="green_sphere">
-    <static>true</static>
-    <link name="link">
-      <visual name="visual">
-        <geometry><sphere><radius>0.5</radius></sphere></geometry>
-        <material>
-          <ambient>0.1 0.7 0.1 1</ambient>
-          <diffuse>0.1 0.8 0.1 1</diffuse>
-        </material>
-      </visual>
-      <collision name="collision">
-        <geometry><sphere><radius>0.5</radius></sphere></geometry>
-      </collision>
-    </link>
-  </model>
-</sdf>
-EOF
-
-# ── Target 4: Yellow box (wider, like a vehicle) ────────────────────────────
-cat > "$TMPDIR/yellow_box.sdf" <<'EOF'
-<?xml version="1.0"?>
-<sdf version="1.9">
-  <model name="yellow_box">
-    <static>true</static>
-    <link name="link">
-      <visual name="visual">
-        <geometry><box><size>1.5 0.7 0.6</size></box></geometry>
-        <material>
-          <ambient>0.8 0.8 0.1 1</ambient>
-          <diffuse>0.9 0.9 0.1 1</diffuse>
-        </material>
-      </visual>
-      <collision name="collision">
-        <geometry><box><size>1.5 0.7 0.6</size></box></geometry>
-      </collision>
-    </link>
-  </model>
-</sdf>
-EOF
-
-# ── Target 5: White cylinder (tall, like a pole/person) ─────────────────────
-cat > "$TMPDIR/white_cylinder.sdf" <<'EOF'
-<?xml version="1.0"?>
-<sdf version="1.9">
-  <model name="white_cylinder">
-    <static>true</static>
-    <link name="link">
-      <visual name="visual">
-        <geometry><cylinder><radius>0.25</radius><length>1.8</length></cylinder></geometry>
-        <material>
-          <ambient>0.9 0.9 0.9 1</ambient>
-          <diffuse>1.0 1.0 1.0 1</diffuse>
-        </material>
-      </visual>
-      <collision name="collision">
-        <geometry><cylinder><radius>0.25</radius><length>1.8</length></cylinder></geometry>
-      </collision>
-    </link>
-  </model>
-</sdf>
-EOF
-
-# ── Spawn all targets at different positions ─────────────────────────────────
-# Positions chosen so drones at ~30m altitude with downward camera can see them
-# Spread across a ~20x20m area near the default PX4 home position (origin)
-
-spawn_model "target_red_box"        5    3   0.4  "$TMPDIR/red_box.sdf"
-spawn_model "target_blue_cylinder" -4    6   0.5  "$TMPDIR/blue_cylinder.sdf"
-spawn_model "target_green_sphere"   8   -5   0.5  "$TMPDIR/green_sphere.sdf"
-spawn_model "target_yellow_box"    -3   -4   0.3  "$TMPDIR/yellow_box.sdf"
-spawn_model "target_white_cylinder" 2    8   0.9  "$TMPDIR/white_cylinder.sdf"
+for i in $(seq 0 $((NUM_TARGETS - 1))); do
+    model_idx=$((i % NUM_MODELS))
+    target_name="target_${MODEL_NAMES[$model_idx]}_$((i + 1))"
+    spawn_fuel_model \
+        "$target_name" \
+        "${POS_X[$i]}" \
+        "${POS_Y[$i]}" \
+        "0.1" \
+        "${POS_YAW[$i]}" \
+        "${MODELS[$model_idx]}"
+    sleep 1
+done
 
 echo ""
-echo "=== Done! 5 target objects spawned ==="
-echo "Objects: red_box, blue_cylinder, green_sphere, yellow_box, white_cylinder"
+echo "=== Done! $NUM_TARGETS target objects spawned ==="
+echo "COCO classes: car, truck, bus (detectable by YOLOv8)"
 echo "Fly drones overhead and check /droneN/camera/image_raw for detections."

@@ -10,7 +10,19 @@
 NUM_DRONES=${1:-3}
 MODEL=${2:-x500_mono_cam_down}
 PX4_DIR="$HOME/Desktop/Swarm/firmware"
+PROJECT_DIR="$HOME/Desktop/Swarm"
 SPACING=3  # meters between drones (Y axis)
+
+# Use custom world without shadows.
+# PX4's gz_env.sh overrides PX4_GZ_WORLDS at startup, so we symlink our world
+# into PX4's worlds dir instead.
+CUSTOM_WORLD="$PROJECT_DIR/worlds/default.sdf"
+PX4_WORLDS_DIR="$PX4_DIR/Tools/simulation/gz/worlds"
+if [ -f "$CUSTOM_WORLD" ]; then
+    ln -sf "$CUSTOM_WORLD" "$PX4_WORLDS_DIR/swarm_default.sdf"
+    export PX4_GZ_WORLD="swarm_default"
+    echo "Using custom world: swarm_default (shadows disabled)"
+fi
 
 # ── Validation ────────────────────────────────────────────────────────────────
 if [ ! -d "$PX4_DIR" ]; then
@@ -36,12 +48,13 @@ echo ""
 # Per docs: first terminal does NOT use PX4_GZ_STANDALONE
 # Uses PX4_SIM_MODEL=gz_<model> (with gz_ prefix) — this is what triggers
 # the correct airframe and gz_bridge spawn logic in px4-rc.gzsim
-echo "[Drone 1] Starting Gazebo + first drone..."
+echo "[Drone 1] Starting Gazebo + first drone (shadows disabled)..."
 gnome-terminal --title="Drone-1 (Gazebo)" -- bash -c "
     cd '$PX4_DIR'
     PX4_SYS_AUTOSTART=4001 \
     PX4_GZ_MODEL_POSE='0,0,0,0,0,0' \
     PX4_SIM_MODEL=gz_${MODEL} \
+    PX4_GZ_WORLD='$PX4_GZ_WORLD' \
     ./build/px4_sitl_default/bin/px4 -i 1
     exec bash
 "
@@ -66,6 +79,7 @@ for i in $(seq 2 $NUM_DRONES); do
         PX4_GZ_MODEL_POSE='0,${Y_POS},0,0,0,0' \
         PX4_SIM_MODEL=gz_${MODEL} \
         PX4_UXRCE_DDS_PORT=${DDS_PORT} \
+        PX4_GZ_WORLD='$PX4_GZ_WORLD' \
         ./build/px4_sitl_default/bin/px4 -i $i
         exec bash
     "

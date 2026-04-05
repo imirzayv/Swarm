@@ -23,8 +23,8 @@ NUM_DRONES=3
 NUM_TARGETS=5
 DURATION=180
 TRIAL=1
-ALTITUDE=30
-AREA_SIZE=40
+ALTITUDE=40
+AREA_SIZE=200
 CONFIDENCE=0.15
 SEED=42
 SKIP_SIM=false
@@ -189,8 +189,18 @@ python3 scripts/metrics_compute.py \
     --area-size "$AREA_SIZE" \
     --altitude "$ALTITUDE"
 
+# ── Plot paths ──────────────────────────────────────────────────────────────
+echo ""
+echo "Generating path plots..."
+python3 scripts/plot_paths.py \
+    --experiment-id "$EXPERIMENT_ID" \
+    --log-base "$OUTPUT_BASE" \
+    --area-size "$AREA_SIZE" \
+    --altitude "$ALTITUDE"
+
 echo ""
 echo "══════════════════════════════════════════════════════════════"
 echo "  Trial complete: $EXPERIMENT_ID"
 echo "  Results: $OUTPUT_DIR/metrics_summary.json"
+echo "  Plots:   $OUTPUT_DIR/paths_combined.png"
 echo "══════════════════════════════════════════════════════════════"

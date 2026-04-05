@@ -70,6 +70,7 @@ class DataLoggerNode(Node):
         self._pos_count = 0
         self._det_count = 0
         self._wp_count = 0
+        self._last_pos: dict[int, tuple[float, float]] = {}  # drone_id -> (x, y)
 
         # Subscribe to all drone topics
         self._subs = []
@@ -105,6 +106,7 @@ class DataLoggerNode(Node):
 
     def _position_cb(self, msg: TargetWaypoint, drone_id: int):
         x, y = gps_to_xy(msg.latitude, msg.longitude)
+        self._last_pos[drone_id] = (x, y)
         self._pos_writer.writerow([
             time.time(), f"{self._elapsed():.2f}", drone_id,
             f"{msg.latitude:.8f}", f"{msg.longitude:.8f}", f"{msg.altitude:.2f}",
@@ -113,12 +115,23 @@ class DataLoggerNode(Node):
         self._pos_count += 1
 
     def _detection_cb(self, msg: Detection, drone_id: int):
+        # world_position in Detection msg is drone-relative offset.
+        # Convert to global XY using the drone's last known position.
+        dx, dy = msg.world_position[0], msg.world_position[1]
+        if drone_id in self._last_pos:
+            drone_x, drone_y = self._last_pos[drone_id]
+            global_x = drone_x + dx
+            global_y = drone_y + dy
+        else:
+            global_x = dx
+            global_y = dy
+
         self._det_writer.writerow([
             time.time(), f"{self._elapsed():.2f}", drone_id,
             msg.class_name, f"{msg.confidence:.4f}",
             f"{msg.bbox[0]:.1f}", f"{msg.bbox[1]:.1f}",
             f"{msg.bbox[2]:.1f}", f"{msg.bbox[3]:.1f}",
-            f"{msg.world_position[0]:.2f}", f"{msg.world_position[1]:.2f}",
+            f"{global_x:.2f}", f"{global_y:.2f}",
         ])
         self._det_count += 1
 
