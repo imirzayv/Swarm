@@ -91,13 +91,17 @@ and parameter tuning (Week 2).
 
 - **Diagnosed:** Gazebo publishes frames (`gz topic -e` confirmed). Bridge creates ROS 2
   topics. Foxglove subscribes successfully. End-to-end image flow not yet confirmed.
-- **Likely cause:** `lazy: false` was missing from YAML config (bridge was not eagerly
-  subscribing to Gazebo); or `__file__` path resolution issue when launching without
-  a built ROS 2 package.
-- **Fix applied 2026-03-31:** Added `lazy: false` to all YAML entries; switched
-  `os.path.dirname(__file__)` to `os.path.realpath(__file__)` for reliable path
-  resolution; added `use_sim_time: true` parameter.
-- **Pending:** Relaunch and verify with `ros2 topic hz /drone1/camera/image_raw`.
+- **Root cause:** ROS 2 Humble with Gazebo Harmonic (`GZ_VERSION=harmonic`) requires
+  the matching `ros-humble-ros-gzharmonic` bridge package. The default `ros-humble-ros-gz`
+  installs bridges for Gazebo Garden, which are incompatible with Harmonic topics.
+- **Fix:**
+  1. Remove the previous `gz_sim` / `ros-gz` installation
+  2. Install the Harmonic-specific bridge: `sudo apt-get install ros-humble-ros-gzharmonic`
+  3. Re-source everything (`source /opt/ros/humble/setup.bash`)
+- **Earlier partial fixes (before root cause found):** Added `lazy: false` to YAML
+  entries, switched `os.path.dirname(__file__)` to `os.path.realpath(__file__)`,
+  added `use_sim_time: true`. These were helpful but not the main fix.
+- **Status:** ✅ Resolved. Camera images confirmed flowing end-to-end.
 
 ---
 
