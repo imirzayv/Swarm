@@ -9,6 +9,9 @@
 #   ./run_experiment.sh --method static --drones 3 --targets 5 --duration 180 --trial 1 --no-sim
 #   ./run_experiment.sh --method lawnmower --drones 3 --targets 5 --duration 180 --trial 3
 #   ./run_experiment.sh --method random --drones 3 --targets 5 --duration 180 --trial 1 --seed 42
+#   ./run_experiment.sh --method binary_voronoi --drones 3 --targets 5 --duration 180 --trial 1
+#   ./run_experiment.sh --method all_converge --drones 3 --targets 5 --duration 180 --trial 1
+#   ./run_experiment.sh --method adaptive --drones 3 --targets 5 --classes person,vehicle,fire
 
 set -e
 
@@ -29,6 +32,7 @@ CONFIDENCE=0.15
 SEED=42
 SKIP_SIM=false
 OUTPUT_BASE="$PROJECT_DIR/data/logs"
+TARGET_CLASSES="person,vehicle,fire"
 
 # ── Parse arguments ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -44,6 +48,7 @@ while [[ $# -gt 0 ]]; do
         --seed)       SEED=$2; shift 2 ;;
         --no-sim)     SKIP_SIM=true; shift ;;
         --output-base) OUTPUT_BASE=$2; shift 2 ;;
+        --classes)    TARGET_CLASSES=$2; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -78,6 +83,8 @@ cleanup() {
     pkill -f "static_grid.py" 2>/dev/null || true
     pkill -f "lawnmower.py" 2>/dev/null || true
     pkill -f "random_waypoints.py" 2>/dev/null || true
+    pkill -f "binary_voronoi.py" 2>/dev/null || true
+    pkill -f "all_converge.py" 2>/dev/null || true
     echo "Cleanup done."
 }
 trap cleanup EXIT
@@ -92,17 +99,41 @@ else
 fi
 
 # ── Step 2: Camera bridge ───────────────────────────────────────────────────
-echo "[2/6] Starting camera bridge..."
+echo "[2/6] Starting camera bridge for $NUM_DRONES drones..."
+# Generate camera bridge YAML dynamically based on drone count
+BRIDGE_YAML="$PROJECT_DIR/data/camera_bridge_dynamic.yaml"
+mkdir -p "$(dirname "$BRIDGE_YAML")"
+> "$BRIDGE_YAML"
+GZ_WORLD="swarm_default"
+for i in $(seq 1 $NUM_DRONES); do
+    cat >> "$BRIDGE_YAML" <<YAML
+- ros_topic_name: /drone${i}/camera/image_raw
+  gz_topic_name: /world/${GZ_WORLD}/model/x500_mono_cam_down_${i}/link/camera_link/sensor/imager/image
+  ros_type_name: sensor_msgs/msg/Image
+  gz_type_name: gz.msgs.Image
+  direction: GZ_TO_ROS
+  lazy: false
+
+- ros_topic_name: /drone${i}/camera/camera_info
+  gz_topic_name: /world/${GZ_WORLD}/model/x500_mono_cam_down_${i}/link/camera_link/sensor/imager/camera_info
+  ros_type_name: sensor_msgs/msg/CameraInfo
+  gz_type_name: gz.msgs.CameraInfo
+  direction: GZ_TO_ROS
+  lazy: false
+
+YAML
+done
+
 gnome-terminal --title="EXP-CamBridge" -- bash -c "
     $SETUP_CMD
-    ros2 launch '$LAUNCH_DIR/camera_bridge.launch.py'
+    ros2 run ros_gz_bridge parameter_bridge --ros-args -p config_file:='$BRIDGE_YAML'
     exec bash
 "
 sleep 5
 
 # ── Step 3: Spawn targets ───────────────────────────────────────────────────
-echo "[3/6] Spawning $NUM_TARGETS targets (seed=$SEED)..."
-bash "$SCRIPT_DIR/spawn_targets.sh"
+echo "[3/6] Spawning $NUM_TARGETS targets (classes: $TARGET_CLASSES)..."
+bash "$SCRIPT_DIR/spawn_targets.sh" --world "$GZ_WORLD" --count "$NUM_TARGETS" --classes "$TARGET_CLASSES" --random --seed "$SEED"
 sleep 2
 
 # ── Step 4: Waypoint executor ───────────────────────────────────────────────
@@ -162,9 +193,25 @@ case $METHOD in
             exec bash
         "
         ;;
+    binary_voronoi)
+        gnome-terminal --title="EXP-Controller" -- bash -c "
+            $SETUP_CMD
+            cd '$PROJECT_DIR'
+            python3 scripts/baselines/binary_voronoi.py --drones $DRONE_IDS --area-size $AREA_SIZE --altitude $ALTITUDE
+            exec bash
+        "
+        ;;
+    all_converge)
+        gnome-terminal --title="EXP-Controller" -- bash -c "
+            $SETUP_CMD
+            cd '$PROJECT_DIR'
+            python3 scripts/baselines/all_converge.py --drones $DRONE_IDS --area-size $AREA_SIZE --altitude $ALTITUDE
+            exec bash
+        "
+        ;;
     *)
         echo "ERROR: Unknown method: $METHOD"
-        echo "Valid methods: adaptive, static, lawnmower, random"
+        echo "Valid methods: adaptive, static, lawnmower, random, binary_voronoi, all_converge"
         exit 1
         ;;
 esac

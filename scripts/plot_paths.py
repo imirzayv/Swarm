@@ -102,7 +102,7 @@ def get_default_targets() -> list[tuple[float, float, str]]:
         (-80.0,  70.0, "hatchback_red"),
         ( 50.0,  80.0, "hatchback_blue"),
         (-60.0, -50.0, "pickup"),
-        ( 85.0, -30.0, "prius"),
+        ( 85.0, -30.0, "hatchback"),
     ]
 
 

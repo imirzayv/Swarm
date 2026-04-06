@@ -292,21 +292,34 @@ class DetectionEvent:
     y: float          # local Y position (meters)
     timestamp: float  # time.time() when detected
     weight: float = 1.0
+    confidence: float = 1.0    # YOLO detection confidence
+    class_priority: float = 1.0  # class-based priority weight
+    class_name: str = ""       # detection class name
 
 
 @dataclass
 class DensityMap:
-    """Density function: uniform baseline + Gaussian bumps at detection locations."""
+    """Density function: uniform baseline + Gaussian bumps at detection locations.
+
+    Supports two weighting modes:
+      - confidence_weighted=True (default): weight = confidence x class_priority
+      - confidence_weighted=False: binary mode (weight = 1.0 for any detection)
+    """
     baseline: float = 1.0
     detection_sigma: float = 5.0    # Gaussian spread in meters
     detection_weight: float = 10.0  # Peak weight of detection bump
     decay_half_life: float = 30.0   # Seconds for bump to decay to half weight
+    confidence_weighted: bool = True  # False = binary density (ablation mode)
     detections: list[DetectionEvent] = field(default_factory=list)
 
-    def add_detection(self, x: float, y: float, weight: float = 1.0):
-        """Add a new detection event."""
+    def add_detection(self, x: float, y: float, weight: float = 1.0,
+                      confidence: float = 1.0, class_priority: float = 1.0,
+                      class_name: str = ""):
+        """Add a new detection event with confidence and class priority."""
         self.detections.append(DetectionEvent(
             x=x, y=y, timestamp=time.time(), weight=weight,
+            confidence=confidence, class_priority=class_priority,
+            class_name=class_name,
         ))
 
     def prune_expired(self, max_age: float = 120.0):
@@ -315,7 +328,13 @@ class DensityMap:
         self.detections = [d for d in self.detections if now - d.timestamp < max_age]
 
     def __call__(self, x: float, y: float) -> float:
-        """Evaluate density at point (x, y)."""
+        """Evaluate density at point (x, y).
+
+        When confidence_weighted=True:
+          density = baseline + sum(det_weight * conf * priority * decay * gaussian)
+        When confidence_weighted=False (binary mode):
+          density = baseline + sum(det_weight * 1.0 * decay * gaussian)
+        """
         density = self.baseline
         now = time.time()
 
@@ -326,6 +345,14 @@ class DensityMap:
             # Gaussian bump
             dist_sq = (x - det.x) ** 2 + (y - det.y) ** 2
             gaussian = math.exp(-dist_sq / (2 * self.detection_sigma ** 2))
-            density += self.detection_weight * det.weight * decay * gaussian
+
+            if self.confidence_weighted:
+                # Novel: confidence x class_priority weighting
+                w = det.confidence * det.class_priority
+            else:
+                # Binary mode (ablation): any detection has weight 1.0
+                w = 1.0
+
+            density += self.detection_weight * det.weight * w * decay * gaussian
 
         return density

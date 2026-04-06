@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import rclpy
 from rclpy.node import Node
-from swarm_msgs.msg import Detection, TargetWaypoint
+from swarm_msgs.msg import Detection, TargetWaypoint, SwarmMode
 
 from voronoi_utils import gps_to_xy
 
@@ -47,10 +47,12 @@ class DataLoggerNode(Node):
         self._pos_file = open(os.path.join(output_dir, "positions.csv"), "w", newline="")
         self._det_file = open(os.path.join(output_dir, "detections.csv"), "w", newline="")
         self._wp_file = open(os.path.join(output_dir, "waypoints.csv"), "w", newline="")
+        self._mode_file = open(os.path.join(output_dir, "swarm_mode.csv"), "w", newline="")
 
         self._pos_writer = csv.writer(self._pos_file)
         self._det_writer = csv.writer(self._det_file)
         self._wp_writer = csv.writer(self._wp_file)
+        self._mode_writer = csv.writer(self._mode_file)
 
         # Write headers
         self._pos_writer.writerow([
@@ -66,10 +68,15 @@ class DataLoggerNode(Node):
             "timestamp", "elapsed_s", "drone_id", "latitude", "longitude",
             "altitude", "priority", "x_local", "y_local",
         ])
+        self._mode_writer.writerow([
+            "timestamp", "elapsed_s", "mode", "exploit_drone_ids",
+            "event_class", "event_x", "event_y", "event_confidence",
+        ])
 
         self._pos_count = 0
         self._det_count = 0
         self._wp_count = 0
+        self._mode_count = 0
         self._last_pos: dict[int, tuple[float, float]] = {}  # drone_id -> (x, y)
 
         # Subscribe to all drone topics
@@ -87,6 +94,11 @@ class DataLoggerNode(Node):
                 TargetWaypoint, f"/drone{did}/target_waypoint",
                 lambda msg, d=did: self._waypoint_cb(msg, d), 10,
             ))
+
+        # Subscribe to swarm mode topic
+        self._subs.append(self.create_subscription(
+            SwarmMode, "/swarm/mode", self._mode_cb, 10,
+        ))
 
         # Status timer (every 10s)
         self.create_timer(10.0, self._status_cb)
@@ -144,16 +156,28 @@ class DataLoggerNode(Node):
         ])
         self._wp_count += 1
 
+    def _mode_cb(self, msg: SwarmMode):
+        mode_str = "EXPLOIT" if msg.mode == SwarmMode.MODE_EXPLOIT else "EXPLORE"
+        exploit_ids = ",".join(str(d) for d in msg.exploit_drone_ids)
+        self._mode_writer.writerow([
+            time.time(), f"{self._elapsed():.2f}", mode_str, exploit_ids,
+            msg.event_class, f"{msg.event_position[0]:.2f}",
+            f"{msg.event_position[1]:.2f}", f"{msg.event_confidence:.4f}",
+        ])
+        self._mode_count += 1
+
     def _status_cb(self):
         elapsed = self._elapsed()
         self.get_logger().info(
             f"[{elapsed:.0f}s] Logged: {self._pos_count} positions, "
-            f"{self._det_count} detections, {self._wp_count} waypoints"
+            f"{self._det_count} detections, {self._wp_count} waypoints, "
+            f"{self._mode_count} mode changes"
         )
         # Flush files periodically
         self._pos_file.flush()
         self._det_file.flush()
         self._wp_file.flush()
+        self._mode_file.flush()
 
     def _duration_expired(self):
         self.get_logger().info(f"Duration ({self.duration}s) reached — stopping logger")
@@ -164,9 +188,11 @@ class DataLoggerNode(Node):
         self._pos_file.close()
         self._det_file.close()
         self._wp_file.close()
+        self._mode_file.close()
         self.get_logger().info(
             f"Final counts: {self._pos_count} positions, "
-            f"{self._det_count} detections, {self._wp_count} waypoints"
+            f"{self._det_count} detections, {self._wp_count} waypoints, "
+            f"{self._mode_count} mode changes"
         )
         self.get_logger().info(f"Data saved to: {self.output_dir}")
 

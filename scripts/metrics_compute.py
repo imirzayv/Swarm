@@ -174,6 +174,111 @@ def compute_detection_metrics(detections: list[dict]) -> dict:
     }
 
 
+def compute_coverage_during_event(positions: list[dict], mode_events: list[dict],
+                                   area_size: float, altitude: float,
+                                   grid_resolution: float = 1.0) -> dict:
+    """Compute coverage percentage maintained while exploit mode is active.
+
+    This metric quantifies how well the split-and-reform strategy preserves
+    baseline coverage during exploitation events.
+
+    Returns dict with:
+      - coverage_during_exploit: average coverage % during EXPLOIT periods
+      - coverage_during_explore: average coverage % during EXPLORE-only periods
+      - exploit_duration_s: total time spent in exploit mode
+      - num_exploit_events: number of exploit mode activations
+    """
+    if not positions or not mode_events:
+        return {
+            "coverage_during_exploit": None,
+            "coverage_during_explore": None,
+            "exploit_duration_s": 0.0,
+            "num_exploit_events": 0,
+        }
+
+    half = area_size / 2
+    fov_radius = compute_fov_radius(altitude)
+
+    # Build exploit time intervals from mode events
+    exploit_intervals = []  # list of (start, end) elapsed_s
+    current_exploit_start = None
+    num_exploit_events = 0
+
+    for evt in sorted(mode_events, key=lambda e: float(e["elapsed_s"])):
+        mode = evt["mode"]
+        t = float(evt["elapsed_s"])
+        if mode == "EXPLOIT" and current_exploit_start is None:
+            current_exploit_start = t
+            num_exploit_events += 1
+        elif mode == "EXPLORE" and current_exploit_start is not None:
+            exploit_intervals.append((current_exploit_start, t))
+            current_exploit_start = None
+
+    # Close any open exploit interval
+    if current_exploit_start is not None:
+        max_t = max(float(p["elapsed_s"]) for p in positions)
+        exploit_intervals.append((current_exploit_start, max_t))
+
+    if not exploit_intervals:
+        return {
+            "coverage_during_exploit": None,
+            "coverage_during_explore": None,
+            "exploit_duration_s": 0.0,
+            "num_exploit_events": 0,
+        }
+
+    total_exploit_time = sum(end - start for start, end in exploit_intervals)
+
+    # Create grid
+    xs = np.arange(-half, half, grid_resolution)
+    ys = np.arange(-half, half, grid_resolution)
+    grid_x, grid_y = np.meshgrid(xs, ys)
+    n_cells = grid_x.size
+
+    # Group positions by time bucket
+    time_buckets: dict[float, list[tuple[float, float]]] = {}
+    for row in positions:
+        t = round(float(row["elapsed_s"]) * 2) / 2
+        x = float(row["x_local"])
+        y = float(row["y_local"])
+        time_buckets.setdefault(t, []).append((x, y))
+
+    def _is_during_exploit(t: float) -> bool:
+        for start, end in exploit_intervals:
+            if start <= t <= end:
+                return True
+        return False
+
+    exploit_coverages = []
+    explore_coverages = []
+
+    for t in sorted(time_buckets.keys()):
+        drone_positions = time_buckets[t]
+        step_coverage = np.zeros_like(grid_x, dtype=int)
+
+        for dx, dy in drone_positions:
+            dist = np.sqrt((grid_x - dx) ** 2 + (grid_y - dy) ** 2)
+            step_coverage += (dist <= fov_radius).astype(int)
+
+        covered = (step_coverage > 0).sum()
+        coverage_pct = 100.0 * covered / n_cells
+
+        if _is_during_exploit(t):
+            exploit_coverages.append(coverage_pct)
+        else:
+            explore_coverages.append(coverage_pct)
+
+    avg_exploit = np.mean(exploit_coverages) if exploit_coverages else None
+    avg_explore = np.mean(explore_coverages) if explore_coverages else None
+
+    return {
+        "coverage_during_exploit": round(float(avg_exploit), 2) if avg_exploit is not None else None,
+        "coverage_during_explore": round(float(avg_explore), 2) if avg_explore is not None else None,
+        "exploit_duration_s": round(total_exploit_time, 2),
+        "num_exploit_events": num_exploit_events,
+    }
+
+
 def compute_experiment_duration(positions: list[dict]) -> float:
     """Get experiment duration from position data."""
     if not positions:
@@ -206,15 +311,20 @@ def main():
     print(f"Loading data from: {log_dir}")
     positions = load_csv(os.path.join(log_dir, "positions.csv"))
     detections = load_csv(os.path.join(log_dir, "detections.csv"))
+    mode_events = load_csv(os.path.join(log_dir, "swarm_mode.csv"))
 
     print(f"  Positions: {len(positions)} rows")
     print(f"  Detections: {len(detections)} rows")
+    print(f"  Mode events: {len(mode_events)} rows")
 
     # Compute metrics
     duration = compute_experiment_duration(positions)
     coverage = compute_coverage(positions, args.area_size, args.altitude, args.grid_resolution)
     energy = compute_energy(positions)
     detection_metrics = compute_detection_metrics(detections)
+    event_coverage = compute_coverage_during_event(
+        positions, mode_events, args.area_size, args.altitude, args.grid_resolution
+    )
 
     # Build summary
     summary = {
@@ -230,6 +340,10 @@ def main():
         "first_detection_s": detection_metrics["first_detection_s"],
         "detections_per_drone": detection_metrics["detections_per_drone"],
         "unique_classes": detection_metrics["unique_classes"],
+        "coverage_during_exploit": event_coverage["coverage_during_exploit"],
+        "coverage_during_explore": event_coverage["coverage_during_explore"],
+        "exploit_duration_s": event_coverage["exploit_duration_s"],
+        "num_exploit_events": event_coverage["num_exploit_events"],
     }
 
     # Save summary
@@ -256,6 +370,11 @@ def main():
     print(f"  Total distance:{energy['total_distance_m']:.1f}m")
     print(f"  Detections:    {detection_metrics['total_detections']}")
     print(f"  First detect:  {detection_metrics['first_detection_s']}s")
+    if event_coverage["coverage_during_exploit"] is not None:
+        print(f"  Cov (exploit): {event_coverage['coverage_during_exploit']:.1f}%")
+        print(f"  Cov (explore): {event_coverage['coverage_during_explore']:.1f}%")
+        print(f"  Exploit time:  {event_coverage['exploit_duration_s']:.1f}s")
+        print(f"  Exploit events:{event_coverage['num_exploit_events']}")
     print(f"══════════════════════════════════════")
     print(f"  Saved: {summary_path}")
     print(f"  Saved: {cov_path}")

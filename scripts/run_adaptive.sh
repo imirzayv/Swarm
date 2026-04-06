@@ -24,14 +24,16 @@ ROS2_WS="$PROJECT_DIR/ros2_ws"
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 NUM_DRONES=3
-ALTITUDE=30
+ALTITUDE=40
 SKIP_SIM=false
 SKIP_SPAWN=false
 DETECTION_CONFIDENCE=0.15
-AREA_SIZE=40
+AREA_SIZE=200
 DETECTION_WEIGHT=10.0
-DETECTION_SIGMA=5.0
+DETECTION_SIGMA=15.0
 DECAY_HALF_LIFE=30.0
+TARGET_CLASSES="person,vehicle,fire"
+NUM_TARGETS=5
 
 # ── Parse arguments ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -42,6 +44,8 @@ while [[ $# -gt 0 ]]; do
         --altitude)   ALTITUDE=$2; shift 2 ;;
         --confidence) DETECTION_CONFIDENCE=$2; shift 2 ;;
         --area-size)  AREA_SIZE=$2; shift 2 ;;
+        --classes)    TARGET_CLASSES=$2; shift 2 ;;
+        --targets)    NUM_TARGETS=$2; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -75,10 +79,34 @@ fi
 
 # ── Step 2: Camera bridge ───────────────────────────────────────────────────
 echo ""
-echo "──── Step 2/6: Starting camera bridge ────"
+echo "──── Step 2/6: Starting camera bridge for $NUM_DRONES drones ────"
+# Generate camera bridge YAML dynamically based on drone count
+BRIDGE_YAML="$PROJECT_DIR/data/camera_bridge_dynamic.yaml"
+mkdir -p "$(dirname "$BRIDGE_YAML")"
+GZ_WORLD="swarm_default"
+> "$BRIDGE_YAML"
+for i in $(seq 1 $NUM_DRONES); do
+    cat >> "$BRIDGE_YAML" <<YAML
+- ros_topic_name: /drone${i}/camera/image_raw
+  gz_topic_name: /world/${GZ_WORLD}/model/x500_mono_cam_down_${i}/link/camera_link/sensor/imager/image
+  ros_type_name: sensor_msgs/msg/Image
+  gz_type_name: gz.msgs.Image
+  direction: GZ_TO_ROS
+  lazy: false
+
+- ros_topic_name: /drone${i}/camera/camera_info
+  gz_topic_name: /world/${GZ_WORLD}/model/x500_mono_cam_down_${i}/link/camera_link/sensor/imager/camera_info
+  ros_type_name: sensor_msgs/msg/CameraInfo
+  gz_type_name: gz.msgs.CameraInfo
+  direction: GZ_TO_ROS
+  lazy: false
+
+YAML
+done
+
 gnome-terminal --title="Camera Bridge" -- bash -c "
     $SETUP_CMD
-    ros2 launch '$LAUNCH_DIR/camera_bridge.launch.py'
+    ros2 run ros_gz_bridge parameter_bridge --ros-args -p config_file:='$BRIDGE_YAML'
     exec bash
 "
 sleep 5
@@ -86,8 +114,8 @@ sleep 5
 # ── Step 3: Spawn targets ───────────────────────────────────────────────────
 if [ "$SKIP_SPAWN" = false ]; then
     echo ""
-    echo "──── Step 3/6: Spawning target objects ────"
-    bash "$SCRIPT_DIR/spawn_targets.sh"
+    echo "──── Step 3/6: Spawning $NUM_TARGETS target objects (classes: $TARGET_CLASSES) ────"
+    bash "$SCRIPT_DIR/spawn_targets.sh" --world "$GZ_WORLD" --count "$NUM_TARGETS" --classes "$TARGET_CLASSES"
     sleep 2
 else
     echo ""

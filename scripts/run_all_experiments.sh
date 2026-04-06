@@ -6,11 +6,12 @@
 #   E2: Scalability (3 vs 5 drones)
 #   E3: Target density (3, 5, 10 targets)
 #   E4: Response time analysis
+#   E5: Ablation study (binary_voronoi, all_converge)
 #
 # Usage:
 #   ./run_all_experiments.sh              # run everything
 #   ./run_all_experiments.sh --exp e1     # run only E1
-#   ./run_all_experiments.sh --exp e2     # run only E2
+#   ./run_all_experiments.sh --exp e5     # run only E5 (ablations)
 #   ./run_all_experiments.sh --trials 5   # override trial count
 
 set -e
@@ -93,6 +94,18 @@ if [ -z "$EXPERIMENT" ] || [ "$EXPERIMENT" = "e4" ]; then
     echo "║  E4: Response Time ($NUM_TRIALS trials)                    ║"
     echo "╚══════════════════════════════════════════════════╝"
     run_batch "adaptive" 3 5 "$NUM_TRIALS" "$DURATION"
+fi
+
+# ── E5: Ablation study ────────────────────────────────────────────────────
+if [ -z "$EXPERIMENT" ] || [ "$EXPERIMENT" = "e5" ]; then
+    echo "╔══════════════════════════════════════════════════╗"
+    echo "║  E5: Ablation Study ($NUM_TRIALS trials each)             ║"
+    echo "║  binary_voronoi (no conf weighting)              ║"
+    echo "║  all_converge (no split-and-reform)              ║"
+    echo "╚══════════════════════════════════════════════════╝"
+    # Full adaptive data reused from E1
+    run_batch "binary_voronoi" 3 5 "$NUM_TRIALS" "$DURATION"
+    run_batch "all_converge" 3 5 "$NUM_TRIALS" "$DURATION"
 fi
 
 echo ""
