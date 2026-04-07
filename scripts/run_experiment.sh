@@ -85,6 +85,8 @@ cleanup() {
     pkill -f "random_waypoints.py" 2>/dev/null || true
     pkill -f "binary_voronoi.py" 2>/dev/null || true
     pkill -f "all_converge.py" 2>/dev/null || true
+    pkill -f "pso_coverage.py" 2>/dev/null || true
+    pkill -f "apf_coverage.py" 2>/dev/null || true
     echo "Cleanup done."
 }
 trap cleanup EXIT
@@ -209,9 +211,25 @@ case $METHOD in
             exec bash
         "
         ;;
+    pso)
+        gnome-terminal --title="EXP-Controller" -- bash -c "
+            $SETUP_CMD
+            cd '$PROJECT_DIR'
+            python3 scripts/baselines/pso_coverage.py --drones $DRONE_IDS --area-size $AREA_SIZE --altitude $ALTITUDE
+            exec bash
+        "
+        ;;
+    apf)
+        gnome-terminal --title="EXP-Controller" -- bash -c "
+            $SETUP_CMD
+            cd '$PROJECT_DIR'
+            python3 scripts/baselines/apf_coverage.py --drones $DRONE_IDS --area-size $AREA_SIZE --altitude $ALTITUDE
+            exec bash
+        "
+        ;;
     *)
         echo "ERROR: Unknown method: $METHOD"
-        echo "Valid methods: adaptive, static, lawnmower, random, binary_voronoi, all_converge"
+        echo "Valid methods: adaptive, static, lawnmower, random, binary_voronoi, all_converge, pso, apf"
         exit 1
         ;;
 esac

@@ -1,0 +1,64 @@
+# Adaptive Area Monitoring — Algorithm Parameters
+# Used by voronoi_coordinator.py and response_selector.py
+
+# ── Monitoring Area ─────────────────────────────────────────────────────────
+area_size: 200          # side length in meters (200x200m monitoring area)
+altitude: 40            # default drone altitude in meters
+
+# ── Voronoi Coverage ────────────────────────────────────────────────────────
+update_rate: 0.5        # Voronoi update frequency in Hz (every 2s)
+detection_sigma: 15.0   # Gaussian spread of detection bumps in meters
+detection_weight: 10.0  # peak weight multiplier for detection Gaussian
+decay_half_life: 30.0   # detection bump decay half-life in seconds
+max_detection_age: 120.0  # prune detections older than this (seconds)
+
+# ── Class Priority Map ──────────────────────────────────────────────────────
+# Maps YOLO/COCO class names to priority weights.
+# Higher priority = stronger attraction in the density function.
+class_priorities:
+  person: 0.9
+  vehicle: 0.6
+  car: 0.6
+  truck: 0.6
+  bus: 0.6
+  fire: 1.0
+
+# ── Class-Specific Formations ──────────────────────────────────────────────
+# Each class triggers a different swarm formation when detected.
+formations:
+  person:
+    type: cluster         # tight inspection cluster
+    num_drones: 2         # number of drones to assign
+    radius: 3.0           # radius from detection center (meters)
+  vehicle:
+    type: chain           # tracking chain along heading
+    num_drones: 2         # number of drones in chain
+    separation: 8.0       # separation between drones (meters)
+  car:
+    type: chain
+    num_drones: 2
+    separation: 8.0
+  truck:
+    type: chain
+    num_drones: 2
+    separation: 8.0
+  fire:
+    type: perimeter       # wide perimeter triangle
+    num_drones: 3         # number of drones for perimeter
+    radius: 10.0          # radius of perimeter (meters)
+
+# Default formation for unknown classes
+default_formation:
+  type: cluster
+  num_drones: 2
+  radius: 5.0
+
+# ── Dual-Mode Exploration/Exploitation ─────────────────────────────────────
+exploit_confidence_threshold: 0.4   # minimum confidence to trigger exploit mode
+exploit_timeout_s: 30.0             # return to explore after this many seconds
+exploit_confidence_drop: 0.2        # reform if confidence drops below this
+min_explore_drones: 1               # minimum drones that must remain exploring
+
+# ── Detection Publisher ────────────────────────────────────────────────────
+detection_confidence: 0.15   # YOLO confidence threshold
+frame_skip: 5                # process every Nth frame
