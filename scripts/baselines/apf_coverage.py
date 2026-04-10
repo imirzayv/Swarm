@@ -5,17 +5,15 @@ Baseline: APF (Artificial Potential Field) — force-field coverage controller.
 Each drone experiences virtual forces:
   - Repulsive from other drones (to spread out)
   - Attractive from uncovered areas (grid-based pull)
-  - Attractive from detection locations (confidence-scaled)
+  - Attractive from detection locations (optional, confidence-scaled)
   - Boundary repulsion at area edges
 
 The net force vector determines each drone's next waypoint displacement.
 
-Detection-reactive: detection locations become attractive force sources with
-strength proportional to detection confidence.
-
 Usage:
     source ~/Desktop/Swarm/ros2_ws/install/setup.bash
     python3 baselines/apf_coverage.py --drones 1 2 3 --area-size 200
+    python3 baselines/apf_coverage.py --drones 1 2 3 --area-size 200 --no-detections
 """
 
 import argparse
@@ -41,12 +39,14 @@ class APFCoverageNode(Node):
                  update_rate: float, altitude: float,
                  repulsion_gain: float, attraction_gain: float,
                  detection_gain: float, boundary_gain: float,
-                 max_step: float, grid_resolution: float):
+                 max_step: float, grid_resolution: float,
+                 use_detections: bool = True):
         super().__init__("apf_coverage_baseline")
 
         self.drone_ids = drone_ids
         self.altitude = altitude
         self.n = len(drone_ids)
+        self.use_detections = use_detections
 
         half = area_size / 2
         self.bounds = (-half, -half, half, half)
@@ -60,6 +60,7 @@ class APFCoverageNode(Node):
         self.max_step = max_step
 
         self.drone_positions: dict[int, tuple[float, float]] = {}
+        self.rng = np.random.default_rng(42)
 
         # Coverage grid to track visited areas
         self.grid_res = grid_resolution
@@ -69,8 +70,18 @@ class APFCoverageNode(Node):
         self.grid_nx = nx
         self.grid_ny = ny
 
-        # Detection events
-        self.detections: list[tuple[float, float, float, float]] = []  # (x, y, confidence, timestamp)
+        # Pre-compute grid cell centers for attraction sampling
+        self.cell_centers_x = np.array([
+            x_min + (i + 0.5) * grid_resolution
+            for x_min in [-half] for i in range(nx)
+        ])
+        self.cell_centers_y = np.array([
+            y_min + (j + 0.5) * grid_resolution
+            for y_min in [-half] for j in range(ny)
+        ])
+
+        # Detection events (optional)
+        self.detections: list[tuple[float, float, float, float]] = []
         self.detection_decay = 30.0
 
         self.wp_publishers = {}
@@ -81,10 +92,11 @@ class APFCoverageNode(Node):
                 TargetWaypoint, f"/drone{did}/position",
                 lambda msg, d=did: self._position_cb(msg, d), 10,
             ))
-            self._subs.append(self.create_subscription(
-                Detection, f"/drone{did}/detection",
-                lambda msg, d=did: self._detection_cb(msg, d), 10,
-            ))
+            if self.use_detections:
+                self._subs.append(self.create_subscription(
+                    Detection, f"/drone{did}/detection",
+                    lambda msg, d=did: self._detection_cb(msg, d), 10,
+                ))
             self.wp_publishers[did] = self.create_publisher(
                 TargetWaypoint, f"/drone{did}/target_waypoint", 10,
             )
@@ -92,10 +104,11 @@ class APFCoverageNode(Node):
         period = 1.0 / update_rate
         self.create_timer(period, self._apf_step)
 
+        det_mode = "ON" if use_detections else "OFF"
         self.get_logger().info(
             f"APF coverage baseline ready — {self.n} drones, "
             f"area={area_size}m, k_rep={repulsion_gain}, k_att={attraction_gain}, "
-            f"k_det={detection_gain}"
+            f"k_det={detection_gain}, detections={det_mode}"
         )
 
     def _position_cb(self, msg: TargetWaypoint, drone_id: int):
@@ -144,55 +157,53 @@ class APFCoverageNode(Node):
 
         # 1. Repulsive forces from other drones
         for other_id in self.drone_ids:
-            if other_id == drone_id:
-                continue
-            if other_id not in self.drone_positions:
+            if other_id == drone_id or other_id not in self.drone_positions:
                 continue
             ox, oy = self.drone_positions[other_id]
             diff = pos - np.array([ox, oy])
             dist = np.linalg.norm(diff)
             if dist < 1.0:
                 dist = 1.0
-            # Inverse-square repulsion
             force += self.k_rep * diff / (dist ** 3)
 
         # 2. Attractive force toward uncovered areas
-        # Sample nearby uncovered cells and compute pull
-        gi = int((px - x_min) / self.grid_res)
-        gj = int((py - y_min) / self.grid_res)
-        r = 8  # look-ahead radius in grid cells
+        # Sample the FULL grid sparsely to break symmetry when everything
+        # is equally uncovered (the original bug: nearby symmetric cells
+        # cancelled each other out, producing zero net force).
         att_force = np.zeros(2)
-        for di in range(-r, r + 1):
-            for dj in range(-r, r + 1):
-                ni, nj = gi + di, gj + dj
-                if 0 <= ni < self.grid_nx and 0 <= nj < self.grid_ny:
-                    uncovered = 1.0 - self.coverage_grid[ni, nj]
-                    if uncovered < 0.1:
-                        continue
-                    cell_x = x_min + (ni + 0.5) * self.grid_res
-                    cell_y = y_min + (nj + 0.5) * self.grid_res
-                    diff = np.array([cell_x, cell_y]) - pos
-                    dist = np.linalg.norm(diff)
-                    if dist < 1.0:
-                        dist = 1.0
-                    att_force += uncovered * diff / (dist ** 2)
+        step = max(1, self.grid_nx // 15)  # sparse sampling
+        for ni in range(0, self.grid_nx, step):
+            for nj in range(0, self.grid_ny, step):
+                uncovered = 1.0 - self.coverage_grid[ni, nj]
+                if uncovered < 0.05:
+                    continue
+                cell_x = x_min + (ni + 0.5) * self.grid_res
+                cell_y = y_min + (nj + 0.5) * self.grid_res
+                diff = np.array([cell_x, cell_y]) - pos
+                dist = np.linalg.norm(diff)
+                if dist < 1.0:
+                    dist = 1.0
+                # Linear attraction (not inverse-square) so distant
+                # uncovered areas still pull meaningfully
+                att_force += uncovered * diff / (dist ** 1.5)
         force += self.k_att * att_force
 
-        # 3. Attractive force from detection locations
-        now = time.time()
-        for det_x, det_y, conf, ts in self.detections:
-            age = now - ts
-            if age > 120.0:
-                continue
-            decay = 0.5 ** (age / self.detection_decay)
-            diff = np.array([det_x, det_y]) - pos
-            dist = np.linalg.norm(diff)
-            if dist < 1.0:
-                dist = 1.0
-            force += self.k_det * conf * decay * diff / (dist ** 2)
+        # 3. Attractive force from detection locations (optional)
+        if self.use_detections:
+            now = time.time()
+            for det_x, det_y, conf, ts in self.detections:
+                age = now - ts
+                if age > 120.0:
+                    continue
+                decay = 0.5 ** (age / self.detection_decay)
+                diff = np.array([det_x, det_y]) - pos
+                dist = np.linalg.norm(diff)
+                if dist < 1.0:
+                    dist = 1.0
+                force += self.k_det * conf * decay * diff / (dist ** 2)
 
         # 4. Boundary repulsion (push away from edges)
-        margin = 5.0
+        margin = 10.0
         if px - x_min < margin:
             force[0] += self.k_bnd / max(px - x_min, 0.5) ** 2
         if x_max - px < margin:
@@ -202,6 +213,9 @@ class APFCoverageNode(Node):
         if y_max - py < margin:
             force[1] -= self.k_bnd / max(y_max - py, 0.5) ** 2
 
+        # 5. Small random perturbation to break ties and avoid local minima
+        force += self.rng.uniform(-0.5, 0.5, 2)
+
         return force
 
     def _apf_step(self):
@@ -210,9 +224,10 @@ class APFCoverageNode(Node):
             return
 
         # Prune old detections
-        now = time.time()
-        self.detections = [(x, y, c, t) for x, y, c, t in self.detections
-                           if now - t < 120.0]
+        if self.use_detections:
+            now = time.time()
+            self.detections = [(x, y, c, t) for x, y, c, t in self.detections
+                               if now - t < 120.0]
 
         x_min, y_min, x_max, y_max = self.bounds
 
@@ -235,7 +250,7 @@ class APFCoverageNode(Node):
             wp.latitude = lat
             wp.longitude = lon
             wp.altitude = self.altitude
-            wp.priority = 1 if self.detections else 0
+            wp.priority = 0
             self.wp_publishers[did].publish(wp)
 
 
@@ -259,6 +274,8 @@ def main():
                         help="Maximum displacement per step (meters)")
     parser.add_argument("--grid-resolution", type=float, default=5.0,
                         help="Coverage grid cell size (meters)")
+    parser.add_argument("--no-detections", action="store_true",
+                        help="Disable detection influence on waypoint generation")
     args = parser.parse_args()
 
     rclpy.init()
@@ -273,6 +290,7 @@ def main():
         boundary_gain=args.boundary_gain,
         max_step=args.max_step,
         grid_resolution=args.grid_resolution,
+        use_detections=not args.no_detections,
     )
     try:
         rclpy.spin(node)

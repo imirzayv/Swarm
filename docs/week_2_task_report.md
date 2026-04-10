@@ -2,7 +2,7 @@
 
 **Project:** Vision-Guided Adaptive Area Monitoring with Drone Swarms
 **Week:** 2 (Days 11–17), April 6–17, 2026
-**Status:** In progress — Days 11–12 completed
+**Status:** In progress — Days 11–13 completed
 
 ---
 
@@ -206,18 +206,74 @@ review. All 3 novel elements were implemented on Day 12.
 
 ---
 
-## Day 13 (Apr 12) — Edge Cases + Tuning ⬜ PENDING
+## Day 13 (Apr 8) — Edge Cases + PSO/APF + Response Time ✅ COMPLETED
 
 **Planned tasks:**
-- [ ] Handle edge cases:
+- [x] Handle edge cases:
   - No detections → uniform Voronoi (already implemented in coordinator)
   - Same target seen by all drones → cap exploit set via `min_explore_drones`
   - Drone disconnection → skip in Voronoi computation
   - Simultaneous multi-class events → prioritize by class_priority
-- [ ] Profile CPU/GPU utilization during full pipeline
-- [ ] Verify parameters in `config/adaptive_params.yaml`
+- [x] Implement PSO and APF baseline controllers
+- [x] Add `--no-detections` flag to PSO/APF
+- [x] Add response time instrumentation to voronoi_coordinator.py
+- [x] Add response time metrics to metrics_compute.py
+- [x] Add PSO/APF to run_all_experiments.sh (E1: 6 methods)
+- [x] Create `paper/references.bib` (25 key references)
+- [ ] Profile CPU/GPU utilization during full pipeline (deferred to dry runs)
 
-**Key parameters to tune:**
+**Actual work completed:**
+
+### 1. Edge Case Verification
+All 4 edge cases were already handled in the coordinator from Day 12:
+- No detections → `polygon_centroid()` used instead of `weighted_centroid()` (line 323)
+- Exploit cap → `min_explore_drones` parameter enforced in `response_selector.py`
+- Disconnection → `_update_voronoi()` returns early if not all drones have positions
+- Multi-class priority → `class_priority` weighting applied in density map
+
+### 2. PSO Baseline Controller (`scripts/baselines/pso_coverage.py`)
+- Particle Swarm Optimization: each drone is a particle with position + velocity
+- Standard PSO equations: `v = w*v + c1*r1*(pbest-x) + c2*r2*(gbest-x)`
+- Fitness: uncovered area attraction + inter-drone repulsion penalty + optional detection bonus
+- Parameters: w=0.7, c1=1.5, c2=1.5, v_max=15m/step
+- Bug fix: random initial velocities (zero init caused drones to stay put)
+
+### 3. APF Baseline Controller (`scripts/baselines/apf_coverage.py`)
+- Artificial Potential Field: 4 virtual forces per drone
+- Forces: drone-drone repulsion, uncovered-area attraction, detection attraction, boundary repulsion
+- Parameters: k_rep=500, k_att=0.5, k_det=20, k_bnd=50, max_step=15m
+- Bug fix: full-grid sparse sampling + reduced distance falloff (1/dist^1.5)
+
+### 4. Detection Toggle (`--no-detections` flag)
+- Both PSO and APF support `--no-detections` CLI flag
+- When set, controllers don't subscribe to Detection topics at all
+- `run_experiment.sh` passes the flag through for pso/apf methods
+
+### 5. Response Time Instrumentation (E4)
+- `voronoi_coordinator.py`: tracks `t_detect`, `t_publish`, `t_arrive` per exploit event
+- Arrival detection: checks if exploit drones are within 5m of formation waypoints
+- On exploit exit: logs reconfiguration event to `data/logs/reconfig_events.csv`
+- Fields: timestamp, event_class, event_x/y, confidence, t_detect, t_publish, t_arrive, reconfig_time_s, publish_delay_s, exploit_drones, reason
+- `metrics_compute.py`: new `compute_response_time()` function reads reconfig CSV
+- Summary includes: mean/min/max reconfig time, mean publish delay, event count
+
+### 6. Experiment Automation Updates
+- `run_all_experiments.sh`: E1 now runs 6 methods (added pso, apf)
+- `run_experiment.sh`: already had pso/apf cases from earlier session
+
+### 7. Literature References (`paper/references.bib`)
+- 25 BibTeX entries covering:
+  - Surveys: Chung 2018, Sai 2023
+  - Voronoi coverage: Cortes 2004, Schwager 2009, Lloyd 1982, Du 1999
+  - Object detection: YOLO, YOLOv8, VisDrone
+  - PSO/APF: Kennedy 1995, Khatib 1986
+  - MARL: MAPPO (Yu 2022), QMIX (Rashid 2020)
+  - Simulation: PX4, ROS 2, Gazebo, MAVSDK
+  - Coverage planning: Galceran 2013, Cabreira 2019
+  - Formation control: Oh 2015
+  - Adaptive monitoring: Nigam 2012, Robin 2016
+
+**Key parameters to tune (during dry runs):**
 | Parameter | Current | Range to Test |
 |-----------|---------|---------------|
 | `AREA_SIZE` | 200m | 100–200m |
@@ -231,12 +287,12 @@ review. All 3 novel elements were implemented on Day 12.
 
 ---
 
-## Day 14 (Apr 13) — Dry Run: E1 (Baselines) + E5 (Ablations) ⬜ PENDING
+## Day 14 (Apr 9) — Dry Run: E1 (Baselines) + E5 (Ablations) ⬜ PENDING
 
 **Planned tasks:**
-- [ ] Run 2 trials each: adaptive, static, lawnmower, random, binary_voronoi, all_converge
+- [ ] Run 2 trials each: adaptive, static, lawnmower, random, pso, apf, binary_voronoi, all_converge
   - 3 drones, 5 mixed-class targets, 120s duration
-- [ ] Verify data logging produces valid CSVs for all 6 methods
+- [ ] Verify data logging produces valid CSVs for all 8 methods
 - [ ] Verify `swarm_mode.csv` is generated for adaptive method
 - [ ] Verify metrics computation works on all trial data (including coverage-during-event)
 - [ ] Verify path plot generation for all trials
@@ -259,7 +315,7 @@ data/logs/<method>_d3_t5_trial0X/
 
 ---
 
-## Day 14 (Apr 14) — Dry Run: E2 + E3 ⬜ PENDING
+## Day 15 (Apr 10) — Dry Run: E2 + E3 ⬜ PENDING
 
 **Planned tasks:**
 - [ ] E2 — Scalability: adaptive, **5 drones**, 5 targets, 2 trials
@@ -276,22 +332,18 @@ camera resolution to 320×240, process every 10th frame in detection_publisher.
 
 ---
 
-## Day 15 (Apr 15) — Response Time Instrumentation (E4) ⬜ PENDING
+## Day 15 (cont.) — Response Time Dry Run (E4) ⬜ PENDING
+
+**Note:** Response time instrumentation was completed on Day 13. Only dry run remains.
 
 **Planned tasks:**
-- [ ] Add timestamps to coordinator for reconfiguration timing:
-  - `t_detect`: when detection message received
-  - `t_publish`: when new waypoints published
-  - `t_arrive`: when all affected drones reach new positions (within threshold)
-- [ ] Log reconfiguration events to a separate CSV:
-  ```
-  timestamp, detection_id, t_detect, t_publish, t_arrive, reconfig_time_s
-  ```
+- [x] Add timestamps to coordinator for reconfiguration timing (DONE Day 13)
+- [x] Log reconfiguration events to `reconfig_events.csv` (DONE Day 13)
 - [ ] Dry run E4: 2 trials, verify reconfiguration time is captured
 
 ---
 
-## Day 16 (Apr 16) — Literature Review Part 1 ⬜ PENDING
+## Day 16 (Apr 11) — Literature Review Part 1 ⬜ PENDING
 
 **Planned tasks:**
 - [ ] Read 8–10 papers on:
@@ -304,7 +356,7 @@ camera resolution to 320×240, process every 10th frame in detection_publisher.
   - Number of agents
   - Simulation vs. real hardware
   - Key limitations
-- [ ] Start `paper/references.bib`
+- [x] Start `paper/references.bib` (DONE Day 13 — 25 entries)
 
 **Target papers (Tier 1 — surveys):**
 1. Cortes et al., "Coverage control for mobile sensing networks" (IEEE Trans. Robotics, 2004)
@@ -315,7 +367,7 @@ camera resolution to 320×240, process every 10th frame in detection_publisher.
 
 ---
 
-## Day 17 (Apr 17) — Literature Review Part 2 + Week Review ⬜ PENDING
+## Day 17 (Apr 12) — Literature Review Part 2 + Week Review ⬜ PENDING
 
 **Planned tasks:**
 - [ ] Read 8–10 more papers on:
@@ -350,15 +402,21 @@ camera resolution to 320×240, process every 10th frame in detection_publisher.
 | 16 | SwarmMode logging in data_logger | ✅ Done | 12 |
 | 17 | E5 ablation experiment automation | ✅ Done | 12 |
 | 18 | Custom messages documentation | ✅ Done | 12 |
-| 19 | Edge case handling + parameter tuning | ⬜ Pending | 13 |
-| 20 | 5-drone launch test | ⬜ Pending | 14 |
-| 21 | E1 + E5 dry run (6 methods × 2 trials) | ⬜ Pending | 14 |
-| 22 | E2 dry run (5 drones × 2 trials) | ⬜ Pending | 15 |
-| 23 | E3 dry run (10 targets × 2 trials) | ⬜ Pending | 15 |
-| 24 | E4 response time instrumentation + dry run | ⬜ Pending | 16 |
-| 25 | Literature review (20 papers annotated) | ⬜ Pending | 16–17 |
-| 26 | `paper/references.bib` started | ⬜ Pending | 16 |
-| 27 | Bug fix checklist for Week 3 | ⬜ Pending | 17 |
+| 19 | Edge case handling (verified all 4 cases) | ✅ Done | 13 |
+| 20 | PSO baseline controller | ✅ Done | 13 |
+| 21 | APF baseline controller | ✅ Done | 13 |
+| 22 | `--no-detections` flag for PSO/APF | ✅ Done | 13 |
+| 23 | Response time instrumentation (t_detect/t_publish/t_arrive) | ✅ Done | 13 |
+| 24 | Response time metrics in metrics_compute.py | ✅ Done | 13 |
+| 25 | PSO/APF added to run_all_experiments.sh (E1: 6 methods) | ✅ Done | 13 |
+| 26 | `paper/references.bib` (25 entries) | ✅ Done | 13 |
+| 27 | 5-drone launch test | ⬜ Pending | 14 |
+| 28 | E1 + E5 dry run (8 methods × 2 trials) | ⬜ Pending | 14 |
+| 29 | E2 dry run (5 drones × 2 trials) | ⬜ Pending | 15 |
+| 30 | E3 dry run (10 targets × 2 trials) | ⬜ Pending | 15 |
+| 31 | E4 response time dry run | ⬜ Pending | 15 |
+| 32 | Literature review (20 papers annotated) | ⬜ Pending | 16–17 |
+| 33 | Bug fix checklist for Week 3 | ⬜ Pending | 17 |
 
 ---
 

@@ -2,7 +2,7 @@
 # Run all experiment batches for the adaptive area monitoring paper.
 #
 # Experiments:
-#   E1: Baselines comparison (adaptive vs static vs lawnmower vs random)
+#   E1: Baselines comparison (adaptive, static, lawnmower, random, pso, apf)
 #   E2: Scalability (3 vs 5 drones)
 #   E3: Target density (3, 5, 10 targets)
 #   E4: Response time analysis
@@ -62,9 +62,9 @@ run_batch() {
 # ── E1: Baselines comparison ────────────────────────────────────────────────
 if [ -z "$EXPERIMENT" ] || [ "$EXPERIMENT" = "e1" ]; then
     echo "╔══════════════════════════════════════════════════╗"
-    echo "║  E1: Baselines Comparison (4 methods x $NUM_TRIALS trials) ║"
+    echo "║  E1: Baselines Comparison (6 methods x $NUM_TRIALS trials) ║"
     echo "╚══════════════════════════════════════════════════╝"
-    for method in adaptive static lawnmower random; do
+    for method in adaptive static lawnmower random pso apf; do
         run_batch "$method" 3 5 "$NUM_TRIALS" "$DURATION"
     done
 fi

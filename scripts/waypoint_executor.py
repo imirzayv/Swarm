@@ -4,6 +4,7 @@ Waypoint Executor: MAVSDK-based ROS 2 node that flies drones to commanded waypoi
 
 Subscribes to /droneN/target_waypoint (TargetWaypoint) and calls MAVSDK goto_location().
 Publishes current GPS position to /droneN/position (TargetWaypoint with priority=0) at 2 Hz.
+Publishes current attitude to /droneN/attitude (QuaternionStamped) at 30 Hz.
 
 On startup, arms all drones and takes off to --altitude meters.
 
@@ -27,6 +28,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from mavsdk import System
+from geometry_msgs.msg import QuaternionStamped
 from swarm_msgs.msg import TargetWaypoint
 
 
@@ -47,6 +49,10 @@ class WaypointExecutorNode(Node):
         self._pos_lock = threading.Lock()
         self._positions: dict[int, tuple[float, float, float]] = {}
 
+        # Latest known attitudes (updated by asyncio telemetry tasks)
+        self._att_lock = threading.Lock()
+        self._attitudes: dict[int, tuple[float, float, float, float]] = {}  # (w,x,y,z)
+
         # QoS for publishing positions
         qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -56,6 +62,7 @@ class WaypointExecutorNode(Node):
 
         # Subscribers and publishers per drone
         self.pos_publishers = {}
+        self.att_publishers = {}
         self._subs = []
         for did in drone_ids:
             # Subscribe to waypoint commands
@@ -71,12 +78,21 @@ class WaypointExecutorNode(Node):
             pub = self.create_publisher(TargetWaypoint, f"/drone{did}/position", qos)
             self.pos_publishers[did] = pub
 
+            # Publish current attitude
+            att_pub = self.create_publisher(
+                QuaternionStamped, f"/drone{did}/attitude", 50
+            )
+            self.att_publishers[did] = att_pub
+
             self.get_logger().info(
-                f"Drone {did}: sub /drone{did}/target_waypoint, pub /drone{did}/position"
+                f"Drone {did}: sub /drone{did}/target_waypoint, "
+                f"pub /drone{did}/position + /drone{did}/attitude"
             )
 
         # Timer to publish positions at 2 Hz
         self.create_timer(0.5, self._publish_positions)
+        # Timer to publish attitudes at 30 Hz
+        self.create_timer(1.0 / 30.0, self._publish_attitudes)
 
         self.get_logger().info(
             f"Waypoint executor ready — {len(drone_ids)} drone(s), "
@@ -103,8 +119,14 @@ class WaypointExecutorNode(Node):
         with self._pos_lock:
             self._positions[drone_id] = (lat, lon, alt)
 
+    def update_attitude(self, drone_id: int,
+                        w: float, x: float, y: float, z: float):
+        """Update cached attitude quaternion (called from asyncio telemetry task)."""
+        with self._att_lock:
+            self._attitudes[drone_id] = (w, x, y, z)
+
     def _publish_positions(self):
-        """Timer callback: publish all known positions."""
+        """Timer callback: publish all known positions at 2 Hz."""
         with self._pos_lock:
             positions = dict(self._positions)
 
@@ -116,6 +138,22 @@ class WaypointExecutorNode(Node):
             msg.altitude = alt
             msg.priority = 0
             self.pos_publishers[did].publish(msg)
+
+    def _publish_attitudes(self):
+        """Timer callback: publish all known attitudes at 30 Hz."""
+        with self._att_lock:
+            attitudes = dict(self._attitudes)
+
+        now = self.get_clock().now().to_msg()
+        for did, (w, x, y, z) in attitudes.items():
+            msg = QuaternionStamped()
+            msg.header.stamp = now
+            msg.header.frame_id = "map"
+            msg.quaternion.w = w
+            msg.quaternion.x = x
+            msg.quaternion.y = y
+            msg.quaternion.z = z
+            self.att_publishers[did].publish(msg)
 
 
 async def drone_task(node: WaypointExecutorNode, drone_id: int, altitude: float):
@@ -151,8 +189,9 @@ async def drone_task(node: WaypointExecutorNode, drone_id: int, altitude: float)
     await asyncio.sleep(10)
     node.get_logger().info(f"[Drone {drone_id}] Airborne")
 
-    # Start telemetry task
+    # Start telemetry tasks (position + attitude)
     asyncio.create_task(telemetry_task(node, drone, drone_id))
+    asyncio.create_task(attitude_telemetry_task(node, drone, drone_id))
 
     # Main loop: check for waypoints every 0.5s
     while True:
@@ -177,6 +216,13 @@ async def telemetry_task(node: WaypointExecutorNode, drone: System, drone_id: in
             pos.longitude_deg,
             pos.absolute_altitude_m,
         )
+
+
+async def attitude_telemetry_task(node: WaypointExecutorNode,
+                                  drone: System, drone_id: int):
+    """Stream attitude quaternion telemetry and update the node's cache."""
+    async for q in drone.telemetry.attitude_quaternion():
+        node.update_attitude(drone_id, q.w, q.x, q.y, q.z)
 
 
 def ros_spin_thread(node: WaypointExecutorNode):

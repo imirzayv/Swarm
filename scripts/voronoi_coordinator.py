@@ -28,6 +28,7 @@ Usage:
 """
 
 import argparse
+import csv
 import os
 import sys
 import time
@@ -56,7 +57,7 @@ class ExploitEvent:
     def __init__(self, class_name: str, det_x: float, det_y: float,
                  confidence: float, exploit_drone_ids: list[int],
                  formation_waypoints: dict[int, tuple[float, float]],
-                 timeout: float):
+                 timeout: float, t_detect: float, t_publish: float):
         self.class_name = class_name
         self.det_x = det_x
         self.det_y = det_y
@@ -66,6 +67,10 @@ class ExploitEvent:
         self.start_time = time.time()
         self.timeout = timeout
         self.last_confidence = confidence
+        self.t_detect = t_detect
+        self.t_publish = t_publish
+        self.t_arrive: float | None = None
+        self.arrival_checked = False
 
     def is_expired(self, confidence_drop_threshold: float) -> bool:
         """Check if exploit event should end (timeout or confidence drop)."""
@@ -120,6 +125,10 @@ class VoronoiCoordinatorNode(Node):
 
         # Active exploit event (None = all drones exploring)
         self.active_exploit: ExploitEvent | None = None
+        self.arrival_threshold = 5.0  # meters — consider drone "arrived" if within this
+
+        # Reconfiguration log (for E4 response time analysis)
+        self._reconfig_log: list[dict] = []
 
         # Waypoint publishers
         self.wp_publishers = {}
@@ -196,9 +205,10 @@ class VoronoiCoordinatorNode(Node):
         )
 
         # Check if this detection should trigger exploit mode
+        t_detect = time.time()
         if (self.active_exploit is None
                 and msg.confidence >= self.exploit_confidence_threshold):
-            self._enter_exploit_mode(msg.class_name, det_x, det_y, msg.confidence)
+            self._enter_exploit_mode(msg.class_name, det_x, det_y, msg.confidence, t_detect)
         elif self.active_exploit is not None:
             # Update confidence of active exploit event if same area
             dist_to_event = ((det_x - self.active_exploit.det_x) ** 2 +
@@ -209,7 +219,7 @@ class VoronoiCoordinatorNode(Node):
                 )
 
     def _enter_exploit_mode(self, class_name: str, det_x: float, det_y: float,
-                            confidence: float):
+                            confidence: float, t_detect: float):
         """Assign nearest drones to exploit formation, rest continue exploring."""
         exploit_ids = self.response_selector.select_exploit_drones(
             class_name, det_x, det_y, self.drone_positions,
@@ -227,6 +237,8 @@ class VoronoiCoordinatorNode(Node):
             class_name, det_x, det_y, exploit_ids,
         )
 
+        t_publish = time.time()
+
         self.active_exploit = ExploitEvent(
             class_name=class_name,
             det_x=det_x,
@@ -235,6 +247,8 @@ class VoronoiCoordinatorNode(Node):
             exploit_drone_ids=exploit_ids,
             formation_waypoints=formation_wps,
             timeout=self.exploit_timeout,
+            t_detect=t_detect,
+            t_publish=t_publish,
         )
 
         explore_ids = [d for d in self.drone_ids if d not in exploit_ids]
@@ -249,7 +263,31 @@ class VoronoiCoordinatorNode(Node):
                            det_x, det_y, confidence)
 
     def _exit_exploit_mode(self, reason: str):
-        """Return all drones to explore mode."""
+        """Return all drones to explore mode and log reconfiguration timing."""
+        evt = self.active_exploit
+        if evt is not None:
+            reconfig_entry = {
+                "timestamp": time.time(),
+                "event_class": evt.class_name,
+                "event_x": evt.det_x,
+                "event_y": evt.det_y,
+                "confidence": evt.confidence,
+                "t_detect": evt.t_detect,
+                "t_publish": evt.t_publish,
+                "t_arrive": evt.t_arrive,
+                "reconfig_time_s": (evt.t_arrive - evt.t_detect) if evt.t_arrive else None,
+                "publish_delay_s": evt.t_publish - evt.t_detect,
+                "exploit_drones": evt.exploit_drone_ids,
+                "reason": reason,
+            }
+            self._reconfig_log.append(reconfig_entry)
+
+            arrive_str = f"{evt.t_arrive - evt.t_detect:.2f}s" if evt.t_arrive else "N/A"
+            self.get_logger().info(
+                f"[RECONFIG] {evt.class_name} — publish_delay={evt.t_publish - evt.t_detect:.3f}s, "
+                f"arrive_delay={arrive_str}, reason={reason}"
+            )
+
         self.get_logger().info(
             f"[EXPLORE] Returning to explore mode — reason: {reason}"
         )
@@ -275,6 +313,28 @@ class VoronoiCoordinatorNode(Node):
 
         # Prune old detections
         self.density_map.prune_expired(max_age=120.0)
+
+        # Check if exploit drones have arrived at formation positions
+        if (self.active_exploit is not None
+                and not self.active_exploit.arrival_checked):
+            all_arrived = True
+            for did in self.active_exploit.exploit_drone_ids:
+                if did not in self.drone_positions or did not in self.active_exploit.formation_waypoints:
+                    all_arrived = False
+                    break
+                px, py = self.drone_positions[did]
+                tx, ty = self.active_exploit.formation_waypoints[did]
+                dist = ((px - tx) ** 2 + (py - ty) ** 2) ** 0.5
+                if dist > self.arrival_threshold:
+                    all_arrived = False
+                    break
+            if all_arrived:
+                self.active_exploit.t_arrive = time.time()
+                self.active_exploit.arrival_checked = True
+                reconfig_time = self.active_exploit.t_arrive - self.active_exploit.t_detect
+                self.get_logger().info(
+                    f"[ARRIVE] All exploit drones arrived — reconfig_time={reconfig_time:.2f}s"
+                )
 
         # Check if exploit event has expired
         if self.active_exploit is not None:
@@ -427,6 +487,42 @@ def main():
     except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         node.get_logger().info("Coordinator shutting down")
     finally:
+        # Save reconfiguration log if any events recorded
+        if node._reconfig_log:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            project_dir = os.path.dirname(script_dir)
+            reconfig_dir = os.path.join(project_dir, "data", "logs")
+            os.makedirs(reconfig_dir, exist_ok=True)
+            reconfig_path = os.path.join(reconfig_dir, "reconfig_events.csv")
+            write_header = not os.path.exists(reconfig_path)
+            with open(reconfig_path, "a", newline="") as f:
+                writer = csv.writer(f)
+                if write_header:
+                    writer.writerow([
+                        "timestamp", "event_class", "event_x", "event_y",
+                        "confidence", "t_detect", "t_publish", "t_arrive",
+                        "reconfig_time_s", "publish_delay_s",
+                        "exploit_drones", "reason",
+                    ])
+                for entry in node._reconfig_log:
+                    writer.writerow([
+                        f"{entry['timestamp']:.3f}",
+                        entry["event_class"],
+                        f"{entry['event_x']:.2f}",
+                        f"{entry['event_y']:.2f}",
+                        f"{entry['confidence']:.4f}",
+                        f"{entry['t_detect']:.3f}",
+                        f"{entry['t_publish']:.3f}",
+                        f"{entry['t_arrive']:.3f}" if entry["t_arrive"] else "",
+                        f"{entry['reconfig_time_s']:.3f}" if entry["reconfig_time_s"] else "",
+                        f"{entry['publish_delay_s']:.3f}",
+                        ";".join(str(d) for d in entry["exploit_drones"]),
+                        entry["reason"],
+                    ])
+            node.get_logger().info(
+                f"Saved {len(node._reconfig_log)} reconfig events to {reconfig_path}"
+            )
+
         node.destroy_node()
         try:
             rclpy.shutdown()

@@ -279,6 +279,60 @@ def compute_coverage_during_event(positions: list[dict], mode_events: list[dict]
     }
 
 
+def compute_response_time(log_dir: str) -> dict:
+    """Compute reconfiguration response time metrics from reconfig_events.csv.
+
+    Returns dict with:
+      - mean_reconfig_time_s: average time from detection to all drones arriving
+      - mean_publish_delay_s: average time from detection to waypoint publish
+      - min_reconfig_time_s / max_reconfig_time_s: extremes
+      - num_reconfig_events: total events with arrival data
+      - reconfig_events: list of per-event dicts
+    """
+    reconfig_path = os.path.join(log_dir, "reconfig_events.csv")
+    events = load_csv(reconfig_path)
+
+    if not events:
+        return {
+            "mean_reconfig_time_s": None,
+            "mean_publish_delay_s": None,
+            "min_reconfig_time_s": None,
+            "max_reconfig_time_s": None,
+            "num_reconfig_events": 0,
+            "reconfig_events": [],
+        }
+
+    reconfig_times = []
+    publish_delays = []
+    event_summaries = []
+
+    for evt in events:
+        pub_delay = float(evt["publish_delay_s"]) if evt.get("publish_delay_s") else None
+        reconfig_time = float(evt["reconfig_time_s"]) if evt.get("reconfig_time_s") else None
+
+        if pub_delay is not None:
+            publish_delays.append(pub_delay)
+        if reconfig_time is not None:
+            reconfig_times.append(reconfig_time)
+
+        event_summaries.append({
+            "event_class": evt.get("event_class", ""),
+            "confidence": float(evt["confidence"]) if evt.get("confidence") else None,
+            "reconfig_time_s": reconfig_time,
+            "publish_delay_s": pub_delay,
+            "reason": evt.get("reason", ""),
+        })
+
+    return {
+        "mean_reconfig_time_s": round(np.mean(reconfig_times), 3) if reconfig_times else None,
+        "mean_publish_delay_s": round(np.mean(publish_delays), 3) if publish_delays else None,
+        "min_reconfig_time_s": round(min(reconfig_times), 3) if reconfig_times else None,
+        "max_reconfig_time_s": round(max(reconfig_times), 3) if reconfig_times else None,
+        "num_reconfig_events": len(reconfig_times),
+        "reconfig_events": event_summaries,
+    }
+
+
 def compute_experiment_duration(positions: list[dict]) -> float:
     """Get experiment duration from position data."""
     if not positions:
@@ -325,6 +379,7 @@ def main():
     event_coverage = compute_coverage_during_event(
         positions, mode_events, args.area_size, args.altitude, args.grid_resolution
     )
+    response_time = compute_response_time(log_dir)
 
     # Build summary
     summary = {
@@ -344,6 +399,11 @@ def main():
         "coverage_during_explore": event_coverage["coverage_during_explore"],
         "exploit_duration_s": event_coverage["exploit_duration_s"],
         "num_exploit_events": event_coverage["num_exploit_events"],
+        "mean_reconfig_time_s": response_time["mean_reconfig_time_s"],
+        "mean_publish_delay_s": response_time["mean_publish_delay_s"],
+        "min_reconfig_time_s": response_time["min_reconfig_time_s"],
+        "max_reconfig_time_s": response_time["max_reconfig_time_s"],
+        "num_reconfig_events": response_time["num_reconfig_events"],
     }
 
     # Save summary
@@ -376,6 +436,11 @@ def main():
         print(f"  Exploit time:  {event_coverage['exploit_duration_s']:.1f}s")
         print(f"  Exploit events:{event_coverage['num_exploit_events']}")
     print(f"══════════════════════════════════════")
+    if response_time["mean_reconfig_time_s"] is not None:
+        print(f"  Reconfig time: {response_time['mean_reconfig_time_s']:.3f}s (mean)")
+        print(f"  Publish delay: {response_time['mean_publish_delay_s']:.3f}s (mean)")
+        print(f"  Reconfig range: {response_time['min_reconfig_time_s']:.3f}–{response_time['max_reconfig_time_s']:.3f}s")
+        print(f"  Reconfig events:{response_time['num_reconfig_events']}")
     print(f"  Saved: {summary_path}")
     print(f"  Saved: {cov_path}")
 

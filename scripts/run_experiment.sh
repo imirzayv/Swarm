@@ -31,6 +31,7 @@ AREA_SIZE=200
 CONFIDENCE=0.15
 SEED=42
 SKIP_SIM=false
+NO_DETECTIONS=false
 OUTPUT_BASE="$PROJECT_DIR/data/logs"
 TARGET_CLASSES="person,vehicle,fire"
 
@@ -47,6 +48,7 @@ while [[ $# -gt 0 ]]; do
         --confidence) CONFIDENCE=$2; shift 2 ;;
         --seed)       SEED=$2; shift 2 ;;
         --no-sim)     SKIP_SIM=true; shift ;;
+        --no-detections) NO_DETECTIONS=true; shift ;;
         --output-base) OUTPUT_BASE=$2; shift 2 ;;
         --classes)    TARGET_CLASSES=$2; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
@@ -212,18 +214,22 @@ case $METHOD in
         "
         ;;
     pso)
+        DET_FLAG=""
+        [ "$NO_DETECTIONS" = true ] && DET_FLAG="--no-detections"
         gnome-terminal --title="EXP-Controller" -- bash -c "
             $SETUP_CMD
             cd '$PROJECT_DIR'
-            python3 scripts/baselines/pso_coverage.py --drones $DRONE_IDS --area-size $AREA_SIZE --altitude $ALTITUDE
+            python3 scripts/baselines/pso_coverage.py --drones $DRONE_IDS --area-size $AREA_SIZE --altitude $ALTITUDE $DET_FLAG
             exec bash
         "
         ;;
     apf)
+        DET_FLAG=""
+        [ "$NO_DETECTIONS" = true ] && DET_FLAG="--no-detections"
         gnome-terminal --title="EXP-Controller" -- bash -c "
             $SETUP_CMD
             cd '$PROJECT_DIR'
-            python3 scripts/baselines/apf_coverage.py --drones $DRONE_IDS --area-size $AREA_SIZE --altitude $ALTITUDE
+            python3 scripts/baselines/apf_coverage.py --drones $DRONE_IDS --area-size $AREA_SIZE --altitude $ALTITUDE $DET_FLAG
             exec bash
         "
         ;;
