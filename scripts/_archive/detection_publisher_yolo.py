@@ -1,42 +1,30 @@
 #!/usr/bin/env python3
 """
-Detection Publisher: HSV color-based detection on ROS 2 camera feeds with
-Detection message output.
+Detection Publisher: YOLOv8 inference on ROS 2 camera feeds with Detection message output.
 
-Why HSV instead of YOLOv8 for the ISTRAS'26 submission
-------------------------------------------------------
-YOLOv8 pretrained on COCO does not reliably recognise Gazebo's synthetic
-primitives (flat-shaded colored boxes with no realistic texture). The
-feature distributions differ too much from photographic training data, so
-detections collapse into nearby COCO classes ("kite", "frisbee") or are
-missed entirely. Fine-tuning is feasible but costs days.
-
-HSV color segmentation is the pragmatic choice: colors are deterministic
-in simulation, so 100% reliable detection of transport-relevant target
-classes is a one-afternoon implementation. The downstream coordination
-pipeline consumes swarm_msgs/Detection — not raw imagery — so swapping
-the perception module later for a CNN detector is a single-file change.
-
-Architecture (unchanged from YOLO version)
-------------------------------------------
+Architecture (attitude-aware, queue + processor thread):
   - Two ROS subscriptions per drone: camera image + attitude quaternion
   - Both callbacks are lightweight — they just push the message into a per-drone
-    deque (image_queue / attitude_queue) tagged with its receive timestamp.
+    deque (image_queue / attitude_queue) tagged with its header timestamp.
   - A single background processor thread:
         1. Pops the oldest image from a drone's image queue
         2. Looks up the attitude that matches the image's stamp
            (SLERP between the bracketing attitude samples; nearest-neighbour
             fallback within `--max-attitude-age`)
-        3. Runs HSV color segmentation on the image
+        3. Runs YOLOv8 inference on the image
         4. Projects each bbox center onto the ground plane in the world
-           (ENU) frame using the synced quaternion + drone altitude
-        5. Publishes a swarm_msgs/Detection with ENU drone-relative offsets
-           (east, north, 0) — matches targets.csv and positions.csv.
+           (NED) frame using the synced quaternion + drone altitude
+        5. Publishes a swarm_msgs/Detection with world-frame offsets
 
-Target class → HSV mapping (matches models/ SDF material colors)
-  person  : pure red    (1, 0, 0)    → H 0–10,   S 150–255, V 100–255
-  vehicle : pure blue   (0, 0, 1)    → H 100–140, S 150–255, V 100–255
-  fire    : pure orange (1, 0.5, 0)  → H 10–25,  S 150–255, V 150–255
+Time synchronisation strategy (between image and attitude streams):
+  - Each Image header.stamp is treated as the moment the frame was captured.
+  - Each QuaternionStamped header.stamp is treated as the moment the attitude
+    was sampled.
+  - For each image we search the attitude buffer for the newest sample with
+    stamp <= image_stamp ("before") and the oldest sample with stamp > image_stamp
+    ("after"). If both exist, we SLERP between them at the image timestamp.
+    If only "before" exists we briefly wait for an "after" (`--max-sync-wait`)
+    before falling back to the nearest sample within `--max-attitude-age`.
 
 Usage:
     source ~/Desktop/Swarm/ros2_ws/install/setup.bash
@@ -44,7 +32,7 @@ Usage:
     python3 detection_publisher.py --drones 1 --show --altitude 30
 
 Prerequisites:
-    pip install opencv-python-headless numpy
+    pip install ultralytics opencv-python-headless numpy
     Camera bridge running:
       ros2 launch ~/Desktop/Swarm/ros2_ws/src/swarm_bringup/launch/camera_bridge.launch.py
     Waypoint executor running (publishes /droneN/attitude)
@@ -63,35 +51,14 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import QuaternionStamped
-from swarm_msgs.msg import Detection, TargetWaypoint
+from swarm_msgs.msg import Detection
+from ultralytics import YOLO
 
 
 # Camera specs from x500_mono_cam_down model.sdf
 CAMERA_HFOV_RAD = 1.74  # ~100 degrees horizontal FOV
 CAMERA_WIDTH = 1280
 CAMERA_HEIGHT = 960
-
-
-# ── HSV class definitions ─────────────────────────────────────────────────
-# OpenCV hue range is [0, 180]; saturation and value are [0, 255].
-# Tune these after visually inspecting Gazebo camera feeds — see README
-# "Calibrating HSV ranges" for the one-liner calibration script.
-COLOR_CLASSES = {
-    "person":  {"hsv_lower": (0,   150, 100), "hsv_upper": (10,  255, 255)},
-    "vehicle": {"hsv_lower": (100, 150, 100), "hsv_upper": (140, 255, 255)},
-    "fire":    {"hsv_lower": (10,  150, 150), "hsv_upper": (25,  255, 255)},
-}
-
-# Preview colors (BGR) for --show overlays
-PREVIEW_BGR = {
-    "person":  (0,   0,   255),
-    "vehicle": (255, 0,   0),
-    "fire":    (0,   140, 255),
-}
-
-MIN_AREA_PX_DEFAULT = 150         # reject blobs below this pixel area
-CONFIDENCE_AREA_NORMALISER = 2000.0  # area at which confidence saturates to 1.0
-MORPH_KERNEL = np.ones((3, 3), np.uint8)
 
 
 # ── Camera mount: downward-facing ──────────────────────────────────────────
@@ -112,6 +79,11 @@ R_BODY_CAM = np.array([
 ])
 
 
+def stamp_to_seconds(stamp) -> float:
+    """builtin_interfaces/Time → float seconds."""
+    return stamp.sec + stamp.nanosec * 1e-9
+
+
 def quat_normalize(q):
     n = math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
     if n < 1e-12:
@@ -124,10 +96,12 @@ def quat_slerp(q0, q1, t):
     q0 = quat_normalize(q0)
     q1 = quat_normalize(q1)
     dot = q0[0] * q1[0] + q0[1] * q1[1] + q0[2] * q1[2] + q0[3] * q1[3]
+    # Take the shorter arc
     if dot < 0.0:
         q1 = (-q1[0], -q1[1], -q1[2], -q1[3])
         dot = -dot
     if dot > 0.9995:
+        # Quaternions are nearly parallel — fall back to linear interp + normalize
         result = (
             q0[0] + t * (q1[0] - q0[0]),
             q0[1] + t * (q1[1] - q0[1]),
@@ -162,38 +136,54 @@ def quat_to_rotmat(q) -> np.ndarray:
 def bbox_to_world_offset(cx_pixel: float, cy_pixel: float,
                          img_w: int, img_h: int,
                          altitude: float,
-                         q_body_to_ned) -> tuple[float, float, float]:
+                         q_ned_body) -> tuple[float, float, float]:
     """
-    Project a bbox-center pixel to a ground point (z=0) using the drone's
-    attitude. Returns (east_offset, north_offset, 0.0) in meters relative to
-    the drone's current XY position in the ENU world frame — matching the
-    Gazebo world frame used by targets.csv and the rest of the pipeline.
+    Project a bbox-center pixel to a ground point (NED z=0) using the drone's
+    attitude. Returns (north_offset, east_offset, 0.0) in meters relative to
+    the drone's current XY position in the world (NED) frame.
 
-    The projection math runs in NED internally (MAVSDK's attitude quaternion
-    is `body → NED`, so R(q) @ v_body = v_ned), then the (north, east)
-    offsets are swapped to ENU (east, north) on the way out. Keeping NED
-    internal avoids double-handling the MAVSDK convention.
+    Parameters
+    ----------
+    cx_pixel, cy_pixel : pixel coordinates of the bbox center
+    img_w, img_h       : image dimensions (px)
+    altitude           : drone height above ground (m, positive)
+    q_ned_body         : MAVSDK / PX4 attitude quaternion (w, x, y, z) — represents
+                         the rotation from NED earth frame to FRD body frame
+                         (PX4 vehicle_attitude convention).
     """
+    # Pinhole intrinsics from horizontal FOV (square pixels)
     fx = (img_w / 2.0) / math.tan(CAMERA_HFOV_RAD / 2.0)
     fy = fx
 
+    # Pixel ray in camera frame (z forward into scene)
     ray_cam = np.array([
         (cx_pixel - img_w / 2.0) / fx,
         (cy_pixel - img_h / 2.0) / fy,
         1.0,
     ])
 
+    # Camera frame → body (FRD) frame
     ray_body = R_BODY_CAM @ ray_cam
 
-    R_body_ned = quat_to_rotmat(q_body_to_ned)
-    ray_ned = R_body_ned @ ray_body
+    # Body → world. PX4's vehicle_attitude.q is the rotation NED → body, so
+    # the matrix R(q) maps NED vectors to body vectors. We need the inverse
+    # (R^T) to lift our body-frame ray into the world (NED) frame.
+    R_body_ned = quat_to_rotmat(q_ned_body)
+    R_ned_body = R_body_ned.T
+    ray_ned = R_ned_body @ ray_body
 
+    # Camera origin in NED, relative to the ground intersection target:
+    #   the drone sits at NED z = -altitude (down is +z, ground is z=0).
+    #   ray_ned points from the camera toward the scene; for a downward-tilted
+    #   camera ray_ned[2] should be > 0 (pointing down).
     if ray_ned[2] <= 1e-6:
+        # Ray is horizontal or pointing up — no ground intersection in the
+        # forward half-space. Return zero offset.
         return (0.0, 0.0, 0.0)
     t = altitude / ray_ned[2]
     north_off = t * ray_ned[0]
     east_off = t * ray_ned[1]
-    return (east_off, north_off, 0.0)
+    return (north_off, east_off, 0.0)
 
 
 # ── Queue items ────────────────────────────────────────────────────────────
@@ -201,9 +191,9 @@ class _ImageItem:
     __slots__ = ("stamp", "frame", "header_stamp")
 
     def __init__(self, stamp: float, frame: np.ndarray, header_stamp):
-        self.stamp = stamp
-        self.frame = frame
-        self.header_stamp = header_stamp
+        self.stamp = stamp                # float seconds (for sync math)
+        self.frame = frame                # BGR np.ndarray
+        self.header_stamp = header_stamp  # original builtin_interfaces/Time
 
 
 class _AttitudeItem:
@@ -211,60 +201,16 @@ class _AttitudeItem:
 
     def __init__(self, stamp: float, q: tuple):
         self.stamp = stamp
-        self.q = q
-
-
-# ── HSV detection core ────────────────────────────────────────────────────
-class _ColorDetection:
-    __slots__ = ("class_name", "x1", "y1", "x2", "y2", "confidence", "area")
-
-    def __init__(self, class_name, x1, y1, x2, y2, confidence, area):
-        self.class_name = class_name
-        self.x1, self.y1, self.x2, self.y2 = x1, y1, x2, y2
-        self.confidence = confidence
-        self.area = area
-
-
-def detect_colors(frame_bgr: np.ndarray,
-                  min_area_px: int) -> list[_ColorDetection]:
-    """Run HSV segmentation for every class and return bounding boxes."""
-    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-    detections: list[_ColorDetection] = []
-
-    for class_name, spec in COLOR_CLASSES.items():
-        mask = cv2.inRange(
-            hsv,
-            np.array(spec["hsv_lower"], dtype=np.uint8),
-            np.array(spec["hsv_upper"], dtype=np.uint8),
-        )
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, MORPH_KERNEL)
-        contours, _ = cv2.findContours(
-            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        for c in contours:
-            area = cv2.contourArea(c)
-            if area < min_area_px:
-                continue
-            x, y, w, h = cv2.boundingRect(c)
-            confidence = min(1.0, float(area) / CONFIDENCE_AREA_NORMALISER)
-            detections.append(_ColorDetection(
-                class_name=class_name,
-                x1=float(x), y1=float(y),
-                x2=float(x + w), y2=float(y + h),
-                confidence=confidence,
-                area=float(area),
-            ))
-
-    return detections
+        self.q = q  # (w, x, y, z)
 
 
 class DetectionPublisherNode(Node):
-    """ROS 2 node — queue-based HSV detection with attitude-synced projection."""
+    """ROS 2 node — queue-based YOLO inference with attitude-synced projection."""
 
-    def __init__(self, drone_ids: list[int],
+    def __init__(self, drone_ids: list[int], model_path: str,
                  show_preview: bool, confidence: float, altitude: float,
                  frame_skip: int, max_attitude_age: float,
-                 max_sync_wait: float, min_area_px: int):
+                 max_sync_wait: float):
         super().__init__("detection_publisher")
 
         self.show_preview = show_preview
@@ -274,32 +220,29 @@ class DetectionPublisherNode(Node):
         self.frame_skip = max(1, frame_skip)
         self.max_attitude_age = max_attitude_age
         self.max_sync_wait = max_sync_wait
-        self.min_area_px = min_area_px
 
         self.frame_count = {d: 0 for d in drone_ids}
         self.detection_count = {d: 0 for d in drone_ids}
         self.dropped_no_attitude = {d: 0 for d in drone_ids}
 
+        # Per-drone queues
         self._image_queues: dict[int, deque] = {
             d: deque(maxlen=8) for d in drone_ids
         }
         self._attitude_queues: dict[int, deque] = {
             d: deque(maxlen=256) for d in drone_ids
         }
-        # Latest altitude per drone (overrides the constant --altitude fallback
-        # once a /droneN/position message arrives).
-        self._altitudes: dict[int, float] = {d: float(altitude) for d in drone_ids}
         self._image_locks = {d: threading.Lock() for d in drone_ids}
         self._attitude_locks = {d: threading.Lock() for d in drone_ids}
-        self._altitude_lock = threading.Lock()
         self._image_event = threading.Event()
         self._stop_event = threading.Event()
 
-        self.get_logger().info(
-            f"HSV classes: {list(COLOR_CLASSES.keys())} "
-            f"(min_area={self.min_area_px}px, conf_threshold={self.confidence})"
-        )
+        # Load YOLO model
+        self.get_logger().info(f"Loading YOLO model: {model_path}")
+        self.model = YOLO(model_path)
+        self.get_logger().info("YOLO model loaded")
 
+        # QoS for camera bridge
         cam_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
@@ -328,19 +271,11 @@ class DetectionPublisherNode(Node):
             )
             self.subscriptions_list.append(sub_att)
 
-            pos_topic = f"/drone{drone_id}/position"
-            sub_pos = self.create_subscription(
-                TargetWaypoint, pos_topic,
-                lambda msg, did=drone_id: self._position_callback(msg, did),
-                10,
-            )
-            self.subscriptions_list.append(sub_pos)
-
             self.get_logger().info(
-                f"Drone {drone_id}: {img_topic} + {att_topic} + {pos_topic} "
-                f"→ /drone{drone_id}/detection"
+                f"Drone {drone_id}: {img_topic} + {att_topic} → /drone{drone_id}/detection"
             )
 
+        # Spawn the processor thread
         self._processor_thread = threading.Thread(
             target=self._processor_loop,
             name="detection_processor",
@@ -350,7 +285,7 @@ class DetectionPublisherNode(Node):
 
         self.get_logger().info(
             f"Detection publisher ready — {len(drone_ids)} drone(s), "
-            f"conf≥{self.confidence}, altitude={self.altitude}m, "
+            f"conf={self.confidence}, altitude={self.altitude}m, "
             f"frame_skip={self.frame_skip}, "
             f"max_attitude_age={self.max_attitude_age}s, "
             f"max_sync_wait={self.max_sync_wait}s"
@@ -369,8 +304,9 @@ class DetectionPublisherNode(Node):
             self.get_logger().warn(f"[Drone {drone_id}] Image error: {e}")
             return
 
-        # Wall-clock receive time for sync (image header.stamp is sim-time;
-        # attitude stamps use system clock — mixing the two is unreliable).
+        # Use wall-clock receive time as the sync stamp. The image
+        # header.stamp comes from Gazebo sim-time while attitude stamps
+        # use the system clock — mixing them makes sync impossible.
         item = _ImageItem(
             stamp=time.time(),
             frame=frame,
@@ -388,22 +324,16 @@ class DetectionPublisherNode(Node):
         with self._attitude_locks[drone_id]:
             self._attitude_queues[drone_id].append(item)
 
-    def _position_callback(self, msg: TargetWaypoint, drone_id: int):
-        # Use the live altitude for ray → ground projection; falls back to
-        # the CLI --altitude until the first /droneN/position arrives.
-        if msg.altitude > 0.5:
-            with self._altitude_lock:
-                self._altitudes[drone_id] = float(msg.altitude)
-
     # ── Processor thread ───────────────────────────────────────────────────
 
     def _processor_loop(self):
-        """Drain the image queues, run HSV detection, and publish detections."""
+        """Drain the image queues, run YOLO, and publish detections."""
         while not self._stop_event.is_set():
             if not self._image_event.wait(timeout=0.5):
                 continue
             self._image_event.clear()
 
+            # Drain across drones until no work remains in this pass
             any_processed = True
             while any_processed and not self._stop_event.is_set():
                 any_processed = False
@@ -412,6 +342,7 @@ class DetectionPublisherNode(Node):
                         any_processed = True
 
     def _process_one(self, drone_id: int) -> bool:
+        """Process one image from `drone_id`. Returns True if work was done."""
         with self._image_locks[drone_id]:
             if not self._image_queues[drone_id]:
                 return False
@@ -429,66 +360,50 @@ class DetectionPublisherNode(Node):
             return True
 
         frame = image_item.frame
+        results = self.model(frame, conf=self.confidence, verbose=False)
+        detections = results[0].boxes
         img_h, img_w = frame.shape[:2]
 
-        detections = [
-            d for d in detect_colors(frame, self.min_area_px)
-            if d.confidence >= self.confidence
-        ]
-
-        if detections:
+        if len(detections) > 0:
             self.detection_count[drone_id] += len(detections)
             self.get_logger().info(
                 f"[Drone {drone_id}] t={image_item.stamp:.3f} — "
                 f"{len(detections)} detection(s)"
             )
 
-            with self._altitude_lock:
-                live_alt = self._altitudes.get(drone_id, self.altitude)
+            for box in detections:
+                cls_id = int(box.cls[0])
+                cls_name = self.model.names[cls_id]
+                conf = float(box.conf[0])
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
 
-            for d in detections:
-                cx = (d.x1 + d.x2) / 2.0
-                cy = (d.y1 + d.y2) / 2.0
-                east_off, north_off, _ = bbox_to_world_offset(
-                    cx, cy, img_w, img_h, live_alt, q_synced
+                cx = (x1 + x2) / 2
+                cy = (y1 + y2) / 2
+                north_off, east_off, _ = bbox_to_world_offset(
+                    cx, cy, img_w, img_h, self.altitude, q_synced
                 )
 
                 det_msg = Detection()
                 det_msg.drone_id = drone_id
-                det_msg.class_name = d.class_name
-                det_msg.confidence = float(d.confidence)
-                det_msg.bbox = [d.x1, d.y1, d.x2, d.y2]
-                # world_position is ENU drone-relative offset: [east, north, 0]
-                det_msg.world_position = [float(east_off), float(north_off), 0.0]
+                det_msg.class_name = cls_name
+                det_msg.confidence = conf
+                det_msg.bbox = [float(x1), float(y1), float(x2), float(y2)]
+                det_msg.world_position = [float(north_off), float(east_off), 0.0]
+                # Preserve the original capture timestamp so downstream nodes
+                # can reason about latency.
                 det_msg.stamp = image_item.header_stamp
 
                 self.det_publishers[drone_id].publish(det_msg)
 
-                yaw_deg = math.degrees(math.atan2(
-                    2.0 * (q_synced[0] * q_synced[3]
-                           + q_synced[1] * q_synced[2]),
-                    1.0 - 2.0 * (q_synced[2] ** 2 + q_synced[3] ** 2),
-                ))
                 self.get_logger().info(
-                    f"  → {d.class_name} ({d.confidence:.2f}, area={d.area:.0f}px) "
-                    f"bbox=[{d.x1:.0f},{d.y1:.0f},{d.x2:.0f},{d.y2:.0f}] "
-                    f"offset_EN=({east_off:.1f},{north_off:.1f})m "
-                    f"alt={live_alt:.1f}m yaw={yaw_deg:+.0f}°"
+                    f"  → {cls_name} ({conf:.2f}) "
+                    f"bbox=[{x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f}] "
+                    f"offset_NE=({north_off:.1f},{east_off:.1f})m"
                 )
 
         if self.show_preview:
-            annotated = frame.copy()
-            for d in detections:
-                color = PREVIEW_BGR.get(d.class_name, (0, 255, 0))
-                cv2.rectangle(annotated,
-                              (int(d.x1), int(d.y1)),
-                              (int(d.x2), int(d.y2)),
-                              color, 2)
-                cv2.putText(annotated,
-                            f"{d.class_name} {d.confidence:.2f}",
-                            (int(d.x1), max(int(d.y1) - 5, 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-            cv2.imshow(f"Drone {drone_id} - HSV", annotated)
+            annotated = results[0].plot()
+            cv2.imshow(f"Drone {drone_id} - YOLOv8", annotated)
             cv2.waitKey(1)
 
         return True
@@ -497,9 +412,13 @@ class DetectionPublisherNode(Node):
         """
         Find a quaternion synchronized to `image_stamp`.
 
-        Strategy: SLERP between bracketing samples; wait briefly for the
-        "after" sample if only "before" is present; else fall back to the
-        nearest sample within `max_attitude_age`; else drop the image.
+        Strategy:
+          1. SLERP between the two attitude samples bracketing the image stamp
+             (newest "before" and oldest "after").
+          2. If only "before" exists, briefly wait (`max_sync_wait`) for a
+             newer sample so we can interpolate.
+          3. Fall back to the nearest sample if it is within `max_attitude_age`.
+          4. Otherwise drop the image.
         """
         deadline = time.time() + self.max_sync_wait
         while True:
@@ -524,6 +443,8 @@ class DetectionPublisherNode(Node):
                 t = max(0.0, min(1.0, t))
                 return quat_slerp(before.q, after.q, t)
 
+            # Only one side available — try to wait for the other before
+            # falling back to nearest-neighbour.
             if time.time() < deadline:
                 time.sleep(0.005)
                 continue
@@ -575,21 +496,20 @@ class DetectionPublisherNode(Node):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="HSV color detection publisher (queue + attitude-synced projection)"
+        description="YOLOv8 detection publisher (queue + attitude-synced projection)"
     )
     parser.add_argument("--drones", type=int, nargs="+", default=[1],
                         help="Drone IDs to monitor (default: 1)")
+    parser.add_argument("--model", type=str, default="yolov8n.pt",
+                        help="YOLO model (default: yolov8n.pt)")
     parser.add_argument("--show", action="store_true",
                         help="Show live annotated preview window")
-    parser.add_argument("--confidence", type=float, default=0.3,
-                        help="Minimum area-normalised confidence (default: 0.3)")
+    parser.add_argument("--confidence", type=float, default=0.25,
+                        help="Detection confidence threshold (default: 0.25)")
     parser.add_argument("--altitude", type=float, default=30.0,
                         help="Drone height above ground in meters (default: 30)")
     parser.add_argument("--frame-skip", type=int, default=5,
                         help="Process every Nth frame (default: 5)")
-    parser.add_argument("--min-area-px", type=int, default=MIN_AREA_PX_DEFAULT,
-                        help=f"Reject contours below this pixel area "
-                             f"(default: {MIN_AREA_PX_DEFAULT})")
     parser.add_argument("--max-attitude-age", type=float, default=0.1,
                         help="Max age (s) of an attitude sample to accept "
                              "as nearest-neighbour (default: 0.1)")
@@ -601,13 +521,13 @@ def main():
     rclpy.init()
     node = DetectionPublisherNode(
         drone_ids=args.drones,
+        model_path=args.model,
         show_preview=args.show,
         confidence=args.confidence,
         altitude=args.altitude,
         frame_skip=args.frame_skip,
         max_attitude_age=args.max_attitude_age,
         max_sync_wait=args.max_sync_wait,
-        min_area_px=args.min_area_px,
     )
 
     try:

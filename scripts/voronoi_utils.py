@@ -17,9 +17,13 @@ import numpy as np
 from scipy.spatial import Voronoi
 
 
-# PX4 SITL default home position
-PX4_HOME_LAT = 47.397742
-PX4_HOME_LON = 8.545594
+# Gazebo world origin — must match worlds/default.sdf <spherical_coordinates>.
+# Previously hardcoded to PX4's stock (47.397742, 8.545594), which was offset
+# ~25 m north / ~43 m east from the actual SITL world origin. Every drone
+# position was being reported in the wrong NED frame, and detections were
+# projecting onto the world ~50 m off from where the targets actually lived.
+PX4_HOME_LAT = 47.397971057728974
+PX4_HOME_LON = 8.546163739800146
 
 # Earth radius approximation for flat-earth conversion
 METERS_PER_DEG_LAT = 111_320.0
@@ -33,10 +37,12 @@ def gps_to_xy(lat: float, lon: float,
               home_lon: float = PX4_HOME_LON) -> tuple[float, float]:
     """Convert GPS coordinates to local XY (meters) relative to home position.
 
-    X = North, Y = East (NED-like, but Z ignored here).
+    Returns ENU: X = East, Y = North. Matches the Gazebo world frame (so
+    targets.csv, which is written directly from Gazebo model poses, lives
+    in the same frame as drone positions and projected detections).
     """
-    x = (lat - home_lat) * METERS_PER_DEG_LAT
-    y = (lon - home_lon) * METERS_PER_DEG_LON
+    x = (lon - home_lon) * METERS_PER_DEG_LON
+    y = (lat - home_lat) * METERS_PER_DEG_LAT
     return x, y
 
 
@@ -45,10 +51,10 @@ def xy_to_gps(x: float, y: float,
               home_lon: float = PX4_HOME_LON) -> tuple[float, float]:
     """Convert local XY (meters) to GPS coordinates.
 
-    X = North offset, Y = East offset.
+    ENU convention: X = East offset, Y = North offset.
     """
-    lat = home_lat + x / METERS_PER_DEG_LAT
-    lon = home_lon + y / METERS_PER_DEG_LON
+    lat = home_lat + y / METERS_PER_DEG_LAT
+    lon = home_lon + x / METERS_PER_DEG_LON
     return lat, lon
 
 

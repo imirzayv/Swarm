@@ -58,6 +58,7 @@ done
 EXPERIMENT_ID="${METHOD}_d${NUM_DRONES}_t${NUM_TARGETS}_trial$(printf '%02d' $TRIAL)"
 OUTPUT_DIR="$OUTPUT_BASE/$EXPERIMENT_ID"
 DRONE_IDS=$(seq -s ' ' 1 $NUM_DRONES)
+mkdir -p "$OUTPUT_DIR"
 
 # Environment setup command
 SETUP_CMD="export PATH=/home/ilham/anaconda3/envs/swarm/bin:\$PATH && source /opt/ros/humble/setup.bash && source $ROS2_WS/install/setup.bash"
@@ -136,8 +137,15 @@ gnome-terminal --title="EXP-CamBridge" -- bash -c "
 sleep 5
 
 # ── Step 3: Spawn targets ───────────────────────────────────────────────────
-echo "[3/6] Spawning $NUM_TARGETS targets (classes: $TARGET_CLASSES)..."
-bash "$SCRIPT_DIR/spawn_targets.sh" --world "$GZ_WORLD" --count "$NUM_TARGETS" --classes "$TARGET_CLASSES" --random --seed "$SEED"
+echo "[3/6] Spawning $NUM_TARGETS targets (classes: $TARGET_CLASSES) inside ${AREA_SIZE}m area..."
+bash "$SCRIPT_DIR/spawn_targets.sh" \
+    --world "$GZ_WORLD" \
+    --count "$NUM_TARGETS" \
+    --classes "$TARGET_CLASSES" \
+    --random \
+    --seed "$SEED" \
+    --area-size "$AREA_SIZE" \
+    --output-csv "$OUTPUT_DIR/targets.csv"
 sleep 2
 
 # ── Step 4: Waypoint executor ───────────────────────────────────────────────
@@ -267,7 +275,8 @@ python3 scripts/plot_paths.py \
     --experiment-id "$EXPERIMENT_ID" \
     --log-base "$OUTPUT_BASE" \
     --area-size "$AREA_SIZE" \
-    --altitude "$ALTITUDE"
+    --altitude "$ALTITUDE" \
+    --targets-file "$OUTPUT_DIR/targets.csv"
 
 echo ""
 echo "══════════════════════════════════════════════════════════════"

@@ -162,6 +162,11 @@ async def drone_task(node: WaypointExecutorNode, drone_id: int, altitude: float)
     udp_port = 14540 + drone_id
     grpc_port = 50040 + drone_id
 
+    # Altitude layering: give each drone its own cruise plane so XY paths can
+    # cross without collision. 1.5 m between layers is well outside the x500's
+    # rotor footprint and keeps FOV overlap small enough for detection.
+    drone_altitude = altitude + (drone_id - 1) * 1.5
+
     drone = System(port=grpc_port)
     node.get_logger().info(
         f"[Drone {drone_id}] Connecting on udp://:{udp_port} (gRPC: {grpc_port})..."
@@ -183,8 +188,11 @@ async def drone_task(node: WaypointExecutorNode, drone_id: int, altitude: float)
     # Arm and takeoff
     node.get_logger().info(f"[Drone {drone_id}] Arming...")
     await drone.action.arm()
-    await drone.action.set_takeoff_altitude(altitude)
-    node.get_logger().info(f"[Drone {drone_id}] Taking off to {altitude}m...")
+    await drone.action.set_takeoff_altitude(drone_altitude)
+    node.get_logger().info(
+        f"[Drone {drone_id}] Taking off to {drone_altitude:.1f}m "
+        f"(layer offset +{drone_altitude - altitude:.1f}m)..."
+    )
     await drone.action.takeoff()
     await asyncio.sleep(10)
     node.get_logger().info(f"[Drone {drone_id}] Airborne")
@@ -197,24 +205,32 @@ async def drone_task(node: WaypointExecutorNode, drone_id: int, altitude: float)
     while True:
         wp = node.get_pending_waypoint(drone_id)
         if wp is not None:
+            # Pin altitude to this drone's layer so coordinator commands can't
+            # push two drones onto the same plane.
             node.get_logger().info(
                 f"[Drone {drone_id}] Executing waypoint → "
-                f"({wp.latitude:.6f}, {wp.longitude:.6f}, {wp.altitude:.1f}m)"
+                f"({wp.latitude:.6f}, {wp.longitude:.6f}, {drone_altitude:.1f}m)"
             )
             await drone.action.goto_location(
-                wp.latitude, wp.longitude, wp.altitude, float("nan")
+                wp.latitude, wp.longitude, drone_altitude, float("nan")
             )
         await asyncio.sleep(0.5)
 
 
 async def telemetry_task(node: WaypointExecutorNode, drone: System, drone_id: int):
-    """Stream position telemetry and update the node's position cache."""
+    """Stream position telemetry and update the node's position cache.
+
+    Publishes `relative_altitude_m` (AGL, relative to takeoff) rather than
+    `absolute_altitude_m` (AMSL). The detection publisher projects pixels onto
+    the ground plane using this value, so it must be height-above-ground —
+    using AMSL would over-scale projections by ~HOME_ALT meters.
+    """
     async for pos in drone.telemetry.position():
         node.update_position(
             drone_id,
             pos.latitude_deg,
             pos.longitude_deg,
-            pos.absolute_altitude_m,
+            pos.relative_altitude_m,
         )
 
 

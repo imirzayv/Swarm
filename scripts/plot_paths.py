@@ -79,37 +79,117 @@ def load_detections(csv_path: str) -> list[tuple[float, float, str, int]]:
     return dets
 
 
-def load_targets(targets_file: str) -> list[tuple[float, float, str]]:
+def load_targets(targets_file: str) -> list[tuple[float, float, str, str]]:
     """
     Load ground-truth target positions from a CSV file.
-    CSV format: name,x,y  (no header)
 
-    If not provided, falls back to the hardcoded default positions
-    matching spawn_targets.sh.
+    Accepted formats (comma separated):
+      name,x,y
+      name,x,y,class
+    A leading `name,x,y,class` header row is skipped automatically.
+
+    Returns a list of (x, y, name, class) tuples. If `targets_file` is None or
+    missing, returns an empty list (no targets drawn, rather than a fake
+    fallback that would mis-locate markers for a differently sized area).
     """
-    targets = []
-    if targets_file and os.path.exists(targets_file):
-        with open(targets_file) as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) >= 3 and not row[0].startswith("#"):
-                    name = row[0].strip()
-                    x = float(row[1])
-                    y = float(row[2])
-                    targets.append((x, y, name))
+    targets: list[tuple[float, float, str, str]] = []
+    if not targets_file or not os.path.exists(targets_file):
         return targets
-    return get_default_targets()
+    with open(targets_file) as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if not row or row[0].startswith("#"):
+                continue
+            if row[0].strip().lower() == "name":
+                continue
+            if len(row) < 3:
+                continue
+            name = row[0].strip()
+            try:
+                x = float(row[1])
+                y = float(row[2])
+            except ValueError:
+                continue
+            cls = row[3].strip() if len(row) >= 4 else ""
+            targets.append((x, y, name, cls))
+    return targets
 
 
-def get_default_targets() -> list[tuple[float, float, str]]:
-    """Default target positions matching spawn_targets.sh."""
-    return [
-        ( 70.0, -60.0, "suv"),
-        (-80.0,  70.0, "hatchback_red"),
-        ( 50.0,  80.0, "hatchback_blue"),
-        (-60.0, -50.0, "pickup"),
-        ( 85.0, -30.0, "hatchback"),
-    ]
+# Per-class target marker colors (matches HSV classes in detection_publisher.py)
+TARGET_CLASS_COLORS = {
+    "person":  "#e41a1c",  # red
+    "vehicle": "#377eb8",  # blue
+    "fire":    "#ff7f00",  # orange
+}
+DEFAULT_TARGET_COLOR = "#d62728"
+
+
+def draw_targets(ax, targets, legend_handles):
+    """
+    Draw ground-truth target markers on `ax`, colored per-class when class
+    metadata is available. Appends matching legend entries to `legend_handles`.
+    """
+    if not targets:
+        return
+
+    by_class: dict[str, list[tuple[float, float, str]]] = {}
+    for tx, ty, tname, tcls in targets:
+        key = tcls if tcls in TARGET_CLASS_COLORS else ""
+        by_class.setdefault(key, []).append((tx, ty, tname))
+
+    for cls, entries in by_class.items():
+        color = TARGET_CLASS_COLORS.get(cls, DEFAULT_TARGET_COLOR)
+        xs = [e[0] for e in entries]
+        ys = [e[1] for e in entries]
+        ax.scatter(
+            xs, ys,
+            marker="X", c=color, edgecolors="black",
+            s=200, zorder=7, linewidths=1.0,
+        )
+        for tx, ty, tname in entries:
+            ax.annotate(
+                tname, (tx, ty),
+                textcoords="offset points", xytext=(0, -14),
+                fontsize=7, ha="center", color="#333333",
+            )
+        label = f"Target ({cls})" if cls else "Target (truth)"
+        legend_handles.append(plt.Line2D(
+            [0], [0], marker="X", color=color, linestyle="None",
+            markeredgecolor="black", markersize=10, label=label,
+        ))
+
+
+def draw_detections(ax, detections, legend_handles, drone_ids=None):
+    """
+    Draw detection markers as stars colored by class (matching the ground-truth
+    target color for that class). Groups automatically by class so the legend
+    grows or shrinks with the actual set of classes present.
+    """
+    if not detections:
+        return
+
+    by_class: dict[str, list[tuple[float, float]]] = {}
+    for x, y, cls, did in detections:
+        if drone_ids is not None and did not in drone_ids:
+            continue
+        by_class.setdefault(cls, []).append((x, y))
+
+    for cls, pts in by_class.items():
+        if not pts:
+            continue
+        color = TARGET_CLASS_COLORS.get(cls, DEFAULT_TARGET_COLOR)
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        ax.scatter(
+            xs, ys,
+            marker="*", c=color, edgecolors="black",
+            s=150, zorder=6, linewidths=0.8, alpha=0.85,
+        )
+        label = f"Detection ({cls})" if cls else "Detection"
+        legend_handles.append(plt.Line2D(
+            [0], [0], marker="*", color=color, linestyle="None",
+            markeredgecolor="black", markersize=12, label=label,
+        ))
 
 
 def plot_drone_paths(
@@ -213,39 +293,10 @@ def plot_drone_paths(
         )
 
     # Plot ground-truth target positions
-    if targets:
-        tgt_x = [t[0] for t in targets]
-        tgt_y = [t[1] for t in targets]
-        ax.scatter(
-            tgt_x, tgt_y,
-            marker="X", c="red", edgecolors="black",
-            s=200, zorder=7, linewidths=1.0
-        )
-        for tx, ty, tname in targets:
-            ax.annotate(
-                tname, (tx, ty),
-                textcoords="offset points", xytext=(0, -14),
-                fontsize=7, ha="center", color="#333333",
-            )
-        legend_handles.append(plt.Line2D(
-            [0], [0], marker="X", color="red", linestyle="None",
-            markeredgecolor="black", markersize=10, label="Targets (truth)"
-        ))
+    draw_targets(ax, targets, legend_handles)
 
-    # Plot detections as star markers
-    if detections:
-        det_x = [d[0] for d in detections if drone_ids is None or d[3] in drone_ids]
-        det_y = [d[1] for d in detections if drone_ids is None or d[3] in drone_ids]
-        if det_x:
-            ax.scatter(
-                det_x, det_y,
-                marker="*", c="gold", edgecolors="black",
-                s=150, zorder=6, linewidths=0.8
-            )
-            legend_handles.append(plt.Line2D(
-                [0], [0], marker="*", color="gold", linestyle="None",
-                markeredgecolor="black", markersize=12, label="Detections"
-            ))
+    # Plot detections as per-class colored stars
+    draw_detections(ax, detections, legend_handles, drone_ids=drone_ids)
 
     # Legend entries for start/end markers
     legend_handles.append(plt.Line2D(
@@ -388,24 +439,7 @@ def plot_voronoi_partitions(
         )
 
     # Plot targets
-    if targets:
-        tgt_x = [t[0] for t in targets]
-        tgt_y = [t[1] for t in targets]
-        ax.scatter(
-            tgt_x, tgt_y,
-            marker="X", c="red", edgecolors="black",
-            s=200, zorder=7, linewidths=1.0
-        )
-        for tx, ty, tname in targets:
-            ax.annotate(
-                tname, (tx, ty),
-                textcoords="offset points", xytext=(0, -14),
-                fontsize=7, ha="center", color="#333333",
-            )
-        legend_handles.append(plt.Line2D(
-            [0], [0], marker="X", color="red", linestyle="None",
-            markeredgecolor="black", markersize=10, label="Targets (truth)"
-        ))
+    draw_targets(ax, targets, legend_handles)
 
     ax.legend(handles=legend_handles, loc="upper left",
               bbox_to_anchor=(1.02, 1.0), fontsize=10, framealpha=0.9,
@@ -496,24 +530,7 @@ def plot_lawnmower_strips(
         )
 
     # Plot targets
-    if targets:
-        tgt_x = [t[0] for t in targets]
-        tgt_y = [t[1] for t in targets]
-        ax.scatter(
-            tgt_x, tgt_y,
-            marker="X", c="red", edgecolors="black",
-            s=200, zorder=7, linewidths=1.0
-        )
-        for tx, ty, tname in targets:
-            ax.annotate(
-                tname, (tx, ty),
-                textcoords="offset points", xytext=(0, -14),
-                fontsize=7, ha="center", color="#333333",
-            )
-        legend_handles.append(plt.Line2D(
-            [0], [0], marker="X", color="red", linestyle="None",
-            markeredgecolor="black", markersize=10, label="Targets (truth)"
-        ))
+    draw_targets(ax, targets, legend_handles)
 
     ax.legend(handles=legend_handles, loc="upper left",
               bbox_to_anchor=(1.02, 1.0), fontsize=10, framealpha=0.9,
@@ -637,17 +654,7 @@ def plot_force_field(
                     alpha=0.5, zorder=3)
 
     # Plot targets
-    if targets:
-        tgt_x = [t[0] for t in targets]
-        tgt_y = [t[1] for t in targets]
-        ax.scatter(tgt_x, tgt_y, marker="X", c="red", edgecolors="black",
-                   s=200, zorder=7, linewidths=1.0)
-        for tx, ty, tname in targets:
-            ax.annotate(tname, (tx, ty), textcoords="offset points",
-                        xytext=(0, -14), fontsize=7, ha="center", color="#333333")
-        legend_handles.append(plt.Line2D(
-            [0], [0], marker="X", color="red", linestyle="None",
-            markeredgecolor="black", markersize=10, label="Targets (truth)"))
+    draw_targets(ax, targets, legend_handles)
 
     ax.legend(handles=legend_handles, loc="upper left",
               bbox_to_anchor=(1.02, 1.0), fontsize=10, framealpha=0.9,
@@ -762,17 +769,7 @@ def plot_pso_vectors(
         markeredgecolor="black", markersize=14, label="Best dwell point"))
 
     # Plot targets
-    if targets:
-        tgt_x = [t[0] for t in targets]
-        tgt_y = [t[1] for t in targets]
-        ax.scatter(tgt_x, tgt_y, marker="X", c="red", edgecolors="black",
-                   s=200, zorder=7, linewidths=1.0)
-        for tx, ty, tname in targets:
-            ax.annotate(tname, (tx, ty), textcoords="offset points",
-                        xytext=(0, -14), fontsize=7, ha="center", color="#333333")
-        legend_handles.append(plt.Line2D(
-            [0], [0], marker="X", color="red", linestyle="None",
-            markeredgecolor="black", markersize=10, label="Targets (truth)"))
+    draw_targets(ax, targets, legend_handles)
 
     ax.legend(handles=legend_handles, loc="upper left",
               bbox_to_anchor=(1.02, 1.0), fontsize=10, framealpha=0.9,
@@ -824,7 +821,13 @@ def main():
     # Load data
     paths = load_positions(positions_csv)
     detections = load_detections(detections_csv)
-    targets = load_targets(args.targets_file)
+
+    targets_file = args.targets_file
+    if not targets_file:
+        auto_targets = os.path.join(data_dir, "targets.csv")
+        if os.path.exists(auto_targets):
+            targets_file = auto_targets
+    targets = load_targets(targets_file)
     drone_ids = sorted(paths.keys())
 
     if not paths:
