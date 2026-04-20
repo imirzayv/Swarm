@@ -27,6 +27,22 @@ import numpy as np
 # Camera specs (from x500_mono_cam_down model)
 CAMERA_HFOV_RAD = 1.74  # ~100 degrees
 
+# Energy model: hover power for a ~1.5 kg quadrotor.
+# Anchor: Abeywickrama et al., 2018 — "Comprehensive Energy Consumption Model
+# for Unmanned Aerial Vehicles, Based on Empirical Studies of Battery Performance"
+# (IEEE Access) reports ~142 W for a DJI Matrice 100 at hover; rounded to 150 W.
+HOVER_POWER_W = 150.0
+
+# Grid carbon intensity (g CO2 per kWh).
+# Azerbaijan: IEA country profile, ~0.44 kg/kWh (2022).
+# EU average: EEA, ~0.25 kg/kWh (2022).
+CO2_AZERBAIJAN_G_PER_KWH = 440.0
+CO2_EU_G_PER_KWH = 250.0
+
+# Detection→target matching: a detection's (world_x, world_y) is accepted as
+# "this target" if within this radius of the known target location.
+TARGET_MATCH_RADIUS_M = 6.0
+
 
 def load_csv(filepath: str) -> list[dict]:
     """Load a CSV file as a list of dicts."""
@@ -136,6 +152,124 @@ def compute_energy(positions: list[dict]) -> dict:
     return {
         "total_distance_m": round(total, 2),
         "per_drone_distance": per_drone,
+    }
+
+
+def compute_energy_and_emissions(duration_s: float, n_drones: int) -> dict:
+    """Mission energy (Wh) and CO2 equivalent (g) for a hover-dominant flight.
+
+    Uses a constant hover-power model: each drone consumes `HOVER_POWER_W`
+    for `duration_s` seconds. Translation work is folded into the same term —
+    acceptable for a paper-level comparison because the three baselines and the
+    adaptive method all run for the same `duration_s`, so any delta in metrics
+    is driven by wall-clock flight time, not by drag work.
+
+    CO2 is reported against two grid mixes so the paper can speak to both the
+    deployment country (Azerbaijan) and the EU average baseline reviewers expect.
+    """
+    if duration_s <= 0 or n_drones <= 0:
+        return {
+            "hover_power_w": HOVER_POWER_W,
+            "mission_duration_s": round(duration_s, 2),
+            "n_drones": n_drones,
+            "energy_per_drone_wh": 0.0,
+            "total_energy_wh": 0.0,
+            "total_energy_kwh": 0.0,
+            "co2_azerbaijan_g": 0.0,
+            "co2_eu_g": 0.0,
+        }
+
+    energy_per_drone_wh = HOVER_POWER_W * duration_s / 3600.0
+    total_energy_wh = energy_per_drone_wh * n_drones
+    total_energy_kwh = total_energy_wh / 1000.0
+    co2_az_g = total_energy_kwh * CO2_AZERBAIJAN_G_PER_KWH
+    co2_eu_g = total_energy_kwh * CO2_EU_G_PER_KWH
+
+    return {
+        "hover_power_w": HOVER_POWER_W,
+        "mission_duration_s": round(duration_s, 2),
+        "n_drones": n_drones,
+        "energy_per_drone_wh": round(energy_per_drone_wh, 3),
+        "total_energy_wh": round(total_energy_wh, 3),
+        "total_energy_kwh": round(total_energy_kwh, 5),
+        "co2_azerbaijan_g": round(co2_az_g, 3),
+        "co2_eu_g": round(co2_eu_g, 3),
+    }
+
+
+def compute_target_discovery_times(detections: list[dict],
+                                   targets: list[dict],
+                                   trial_duration_s: float,
+                                   match_radius_m: float = TARGET_MATCH_RADIUS_M) -> dict:
+    """Time-to-first and time-to-all for the ground-truth targets.
+
+    For each target in `targets.csv`, scan `detections.csv` in time order and
+    record the earliest detection whose `class_name` matches and whose
+    `(world_x, world_y)` lies within `match_radius_m` of the target's location.
+    Targets with no matching detection contribute `None` and are counted as
+    "not found" — `time_to_all_targets_s` is only defined if every target was
+    found, otherwise `None`.
+
+    Returns:
+      time_to_first_target_s: earliest discovery across all targets (or None)
+      time_to_all_targets_s: latest discovery across all targets (or None if
+          any target was never detected within the trial)
+      targets_found: int — how many ground-truth targets were discovered
+      targets_total: int — count of targets listed in targets.csv
+      per_target_discovery: list of {name, class, found, first_detection_s}
+    """
+    if not targets:
+        return {
+            "time_to_first_target_s": None,
+            "time_to_all_targets_s": None,
+            "targets_found": 0,
+            "targets_total": 0,
+            "per_target_discovery": [],
+            "match_radius_m": match_radius_m,
+        }
+
+    # Pre-sort detections by elapsed_s so first-match scan is O(n) per target.
+    sorted_dets = sorted(
+        (d for d in detections if d.get("world_x") and d.get("world_y")),
+        key=lambda d: float(d["elapsed_s"]),
+    )
+
+    per_target = []
+    discovery_times = []
+
+    for tgt in targets:
+        tx = float(tgt["x"])
+        ty = float(tgt["y"])
+        tclass = tgt["class"].strip().lower()
+        first_t = None
+        for det in sorted_dets:
+            if det["class_name"].strip().lower() != tclass:
+                continue
+            dx = float(det["world_x"]) - tx
+            dy = float(det["world_y"]) - ty
+            if math.hypot(dx, dy) <= match_radius_m:
+                first_t = float(det["elapsed_s"])
+                break
+        per_target.append({
+            "name": tgt.get("name", ""),
+            "class": tclass,
+            "found": first_t is not None,
+            "first_detection_s": round(first_t, 3) if first_t is not None else None,
+        })
+        if first_t is not None:
+            discovery_times.append(first_t)
+
+    targets_total = len(targets)
+    targets_found = len(discovery_times)
+    all_found = targets_found == targets_total and targets_found > 0
+
+    return {
+        "time_to_first_target_s": round(min(discovery_times), 3) if discovery_times else None,
+        "time_to_all_targets_s": round(max(discovery_times), 3) if all_found else None,
+        "targets_found": targets_found,
+        "targets_total": targets_total,
+        "per_target_discovery": per_target,
+        "match_radius_m": match_radius_m,
     }
 
 
@@ -366,20 +500,26 @@ def main():
     positions = load_csv(os.path.join(log_dir, "positions.csv"))
     detections = load_csv(os.path.join(log_dir, "detections.csv"))
     mode_events = load_csv(os.path.join(log_dir, "swarm_mode.csv"))
+    targets = load_csv(os.path.join(log_dir, "targets.csv"))
 
     print(f"  Positions: {len(positions)} rows")
     print(f"  Detections: {len(detections)} rows")
     print(f"  Mode events: {len(mode_events)} rows")
+    print(f"  Targets:    {len(targets)} rows")
 
     # Compute metrics
     duration = compute_experiment_duration(positions)
     coverage = compute_coverage(positions, args.area_size, args.altitude, args.grid_resolution)
-    energy = compute_energy(positions)
+    distance = compute_energy(positions)
     detection_metrics = compute_detection_metrics(detections)
     event_coverage = compute_coverage_during_event(
         positions, mode_events, args.area_size, args.altitude, args.grid_resolution
     )
     response_time = compute_response_time(log_dir)
+
+    n_drones = len(distance["per_drone_distance"]) or 1
+    energy = compute_energy_and_emissions(duration, n_drones)
+    discovery = compute_target_discovery_times(detections, targets, duration)
 
     # Build summary
     summary = {
@@ -387,14 +527,27 @@ def main():
         "duration_s": duration,
         "area_size_m": args.area_size,
         "altitude_m": args.altitude,
+        "n_drones": n_drones,
         "coverage_percent": coverage["coverage_percent"],
         "redundancy_ratio": coverage["redundancy_ratio"],
-        "total_distance_m": energy["total_distance_m"],
-        "per_drone_distance_m": energy["per_drone_distance"],
+        "total_distance_m": distance["total_distance_m"],
+        "per_drone_distance_m": distance["per_drone_distance"],
+        "hover_power_w": energy["hover_power_w"],
+        "energy_per_drone_wh": energy["energy_per_drone_wh"],
+        "total_energy_wh": energy["total_energy_wh"],
+        "total_energy_kwh": energy["total_energy_kwh"],
+        "co2_azerbaijan_g": energy["co2_azerbaijan_g"],
+        "co2_eu_g": energy["co2_eu_g"],
         "total_detections": detection_metrics["total_detections"],
         "first_detection_s": detection_metrics["first_detection_s"],
         "detections_per_drone": detection_metrics["detections_per_drone"],
         "unique_classes": detection_metrics["unique_classes"],
+        "targets_total": discovery["targets_total"],
+        "targets_found": discovery["targets_found"],
+        "time_to_first_target_s": discovery["time_to_first_target_s"],
+        "time_to_all_targets_s": discovery["time_to_all_targets_s"],
+        "target_match_radius_m": discovery["match_radius_m"],
+        "per_target_discovery": discovery["per_target_discovery"],
         "coverage_during_exploit": event_coverage["coverage_during_exploit"],
         "coverage_during_explore": event_coverage["coverage_during_explore"],
         "exploit_duration_s": event_coverage["exploit_duration_s"],
@@ -427,9 +580,18 @@ def main():
     print(f"══════════════════════════════════════")
     print(f"  Coverage:      {coverage['coverage_percent']:.1f}%")
     print(f"  Redundancy:    {coverage['redundancy_ratio']:.3f}")
-    print(f"  Total distance:{energy['total_distance_m']:.1f}m")
+    print(f"  Total distance:{distance['total_distance_m']:.1f}m")
+    print(f"  Energy:        {energy['total_energy_wh']:.2f} Wh "
+          f"({energy['energy_per_drone_wh']:.2f} Wh × {n_drones} drones)")
+    print(f"  CO2 (AZ/EU):   {energy['co2_azerbaijan_g']:.2f} g / "
+          f"{energy['co2_eu_g']:.2f} g")
     print(f"  Detections:    {detection_metrics['total_detections']}")
     print(f"  First detect:  {detection_metrics['first_detection_s']}s")
+    print(f"  Targets found: {discovery['targets_found']}/{discovery['targets_total']}")
+    ttf = discovery["time_to_first_target_s"]
+    tta = discovery["time_to_all_targets_s"]
+    print(f"  First target:  {ttf if ttf is not None else 'n/a'} s")
+    print(f"  All targets:   {tta if tta is not None else 'n/a'} s")
     if event_coverage["coverage_during_exploit"] is not None:
         print(f"  Cov (exploit): {event_coverage['coverage_during_exploit']:.1f}%")
         print(f"  Cov (explore): {event_coverage['coverage_during_explore']:.1f}%")
