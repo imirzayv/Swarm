@@ -26,7 +26,8 @@ CLASSES="vehicle"
 RANDOM_PLACEMENT=false
 SEED=42
 AREA_SIZE=100            # side length (m) of the monitoring square targets go into
-OUTPUT_CSV=""            # optional manifest: name,x,y,class
+OUTPUT_CSV=""            # optional manifest: name,x,y,class,spawn_t
+SCHEDULE=""              # comma-separated spawn times (s), e.g. "20,50,80"
 
 # ── Parse arguments ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -38,6 +39,7 @@ while [[ $# -gt 0 ]]; do
         --seed)       SEED=$2; shift 2 ;;
         --area-size)  AREA_SIZE=$2; shift 2 ;;
         --output-csv) OUTPUT_CSV=$2; shift 2 ;;
+        --schedule)   SCHEDULE=$2; shift 2 ;;
         *)
             # Legacy positional args: $1=world $2=count
             if [ -z "${LEGACY_WORLD_SET:-}" ]; then
@@ -53,6 +55,15 @@ done
 
 IFS=',' read -ra CLASS_LIST <<< "$CLASSES"
 
+# Schedule mode: spawn times drive target count and force random placement.
+SCHED_TIMES=()
+if [ -n "$SCHEDULE" ]; then
+    IFS=',' read -ra SCHED_TIMES <<< "$SCHEDULE"
+    NUM_TARGETS=${#SCHED_TIMES[@]}
+    RANDOM_PLACEMENT=true
+    SCHEDULE_START_NS=$(date +%s%N)
+fi
+
 # Keep targets inside 80% of the monitoring area so drones can actually see them.
 HALF_SPAN=$(awk -v a="$AREA_SIZE" 'BEGIN {printf "%.3f", a*0.4}')
 # Scale the legacy PREDEF table (which was sized for a ~180 m area) down to AREA_SIZE.
@@ -62,11 +73,14 @@ echo "=== Spawning $NUM_TARGETS colored primitives into Gazebo world: $WORLD ===
 echo "    Classes:     ${CLASS_LIST[*]}"
 echo "    Area size:   ${AREA_SIZE} m (targets confined to ±${HALF_SPAN} m)"
 echo "    Placement:   random=$RANDOM_PLACEMENT seed=$SEED"
+if [ -n "$SCHEDULE" ]; then
+    echo "    Schedule:    [$SCHEDULE] relative seconds from script start"
+fi
 [ -n "$OUTPUT_CSV" ] && echo "    Manifest:    $OUTPUT_CSV"
 
 if [ -n "$OUTPUT_CSV" ]; then
     mkdir -p "$(dirname "$OUTPUT_CSV")"
-    echo "name,x,y,class" > "$OUTPUT_CSV"
+    echo "name,x,y,class,spawn_t" > "$OUTPUT_CSV"
 fi
 
 # ── Pre-defined positions (used when --random is not set) ──────────────────
@@ -190,14 +204,29 @@ for i in $(seq 0 $((NUM_TARGETS - 1))); do
             ;;
     esac
 
+    # Scheduled mode: wait until the target's absolute spawn time before firing.
+    SPAWN_T="0"
+    if [ -n "$SCHEDULE" ]; then
+        SPAWN_T="${SCHED_TIMES[$i]}"
+        NOW_NS=$(date +%s%N)
+        TARGET_NS=$(awk -v t="$SPAWN_T" 'BEGIN{printf "%.0f", t*1000000000}')
+        WAIT_NS=$((SCHEDULE_START_NS + TARGET_NS - NOW_NS))
+        if [ "$WAIT_NS" -gt 0 ]; then
+            WAIT_S=$(awk -v n="$WAIT_NS" 'BEGIN{printf "%.3f", n/1000000000}')
+            echo "[Schedule] Waiting ${WAIT_S}s until t=${SPAWN_T}s (target ${target_name})"
+            sleep "$WAIT_S"
+        fi
+    fi
+
     spawn_colored_box "$target_name" "$POS_X" "$POS_Y" "$SLAB_Z" "$YAW" \
         "$SLAB_SIZE_X" "$SLAB_SIZE_Y" "$SLAB_SIZE_Z" "$R" "$G" "$B"
 
     if [ -n "$OUTPUT_CSV" ]; then
-        echo "${target_name},${POS_X},${POS_Y},${manifest_class}" >> "$OUTPUT_CSV"
+        echo "${target_name},${POS_X},${POS_Y},${manifest_class},${SPAWN_T}" >> "$OUTPUT_CSV"
     fi
 
-    sleep 0.5
+    # Static mode pacing between spawns; schedule mode times itself.
+    [ -z "$SCHEDULE" ] && sleep 0.5
 done
 
 echo ""

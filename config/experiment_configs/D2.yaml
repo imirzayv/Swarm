@@ -1,0 +1,29 @@
+# D2 — Dynamic scaling to 5 drones (replaces legacy E2)
+#
+# Answers RQ-D2: how does event-response latency scale with swarm size?
+# Same schedule and class sequence as D1; drone count is the only knob.
+# Figure 3 in the paper joins D1's adaptive+lawnmower at 3 drones with
+# D2's adaptive+lawnmower at 5 drones so the scaling curve is matched-pair.
+
+id: D2
+description: Dynamic scaling to 5 drones
+research_question: RQ-D2
+target_mode: dynamic
+methods:
+  - adaptive
+  - lawnmower
+swarm:
+  drones: 5
+  altitude_m: 60
+  area_size_m: 400
+targets:
+  schedule_s: [25, 85, 145]
+  classes: [person, vehicle, fire]
+trial:
+  duration_s: 200
+  steady_state_window_s: 25
+trials_per_method: 5
+total_trials: 10
+output_subdir: data/logs/istras/D2
+seed_formula: "42 + trial_index"
+legacy_alias: E2

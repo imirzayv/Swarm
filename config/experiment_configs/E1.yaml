@@ -1,0 +1,31 @@
+# E1 — Head-to-head at fixed swarm size (3 drones)
+#
+# Answers SQ1: does adaptive coverage save energy versus sweep/grid baselines
+# at a fixed swarm size? Three methods compete on identical world, schedule,
+# and target classes; trials vary only by random seed (target positions).
+#
+# This is the canonical, mandatory experiment: even if E2/E3 are cut for
+# time, E1 alone constitutes a publishable result. Source-of-truth values
+# are mirrored in scripts/run_all_experiments.sh.
+
+id: E1
+description: Head-to-head at 3 drones with three competing coordination strategies
+research_question: SQ1
+methods:
+  - adaptive
+  - lawnmower
+  - static
+swarm:
+  drones: 3
+  altitude_m: 10
+  area_size_m: 40
+targets:
+  schedule_s: [20, 50, 80]
+  classes: [person, vehicle, fire]
+trial:
+  duration_s: 150
+  steady_state_window_s: 20   # 0–20 s = no events, baseline coverage only
+trials_per_method: 5
+total_trials: 15
+output_subdir: data/logs/istras/E1
+seed_formula: "42 + trial_index"

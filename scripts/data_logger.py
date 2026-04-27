@@ -25,6 +25,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from std_msgs.msg import Bool
 from swarm_msgs.msg import Detection, TargetWaypoint, SwarmMode
 
 from voronoi_utils import gps_to_xy
@@ -98,6 +100,24 @@ class DataLoggerNode(Node):
         # Subscribe to swarm mode topic
         self._subs.append(self.create_subscription(
             SwarmMode, "/swarm/mode", self._mode_cb, 10,
+        ))
+
+        # Subscribe to lawnmower completion signal (latched, so we'll get it
+        # even if the baseline published before we were up).
+        complete_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self._subs.append(self.create_subscription(
+            Bool, "/lawnmower/complete", self._complete_cb, complete_qos,
+        ))
+        # Adaptive coordinator publishes /adaptive/complete on the same
+        # contract (latched Bool) once it has confirmed all expected
+        # targets — same handler works for both.
+        self._subs.append(self.create_subscription(
+            Bool, "/adaptive/complete", self._adaptive_complete_cb, complete_qos,
         ))
 
         # Status timer (every 10s)
@@ -183,6 +203,22 @@ class DataLoggerNode(Node):
         self.get_logger().info(f"Duration ({self.duration}s) reached — stopping logger")
         self._close_files()
         raise SystemExit(0)
+
+    def _complete_cb(self, msg: Bool):
+        if msg.data:
+            self.get_logger().info(
+                "Lawnmower signaled completion — stopping logger"
+            )
+            self._close_files()
+            raise SystemExit(0)
+
+    def _adaptive_complete_cb(self, msg: Bool):
+        if msg.data:
+            self.get_logger().info(
+                "Adaptive coordinator signaled completion — stopping logger"
+            )
+            self._close_files()
+            raise SystemExit(0)
 
     def _close_files(self):
         self._pos_file.close()

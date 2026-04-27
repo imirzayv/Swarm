@@ -58,6 +58,64 @@ exploit_confidence_threshold: 0.4   # minimum confidence to trigger exploit mode
 exploit_timeout_s: 30.0             # return to explore after this many seconds
 exploit_confidence_drop: 0.2        # reform if confidence drops below this
 min_explore_drones: 1               # minimum drones that must remain exploring
+                                    #   (3 drones: 1 | 5 drones: 2 recommended)
+max_concurrent_exploits: 2          # how many independent events can be serviced
+                                    # at once. Must be ≤ floor((n_drones −
+                                    # min_explore_drones) / formation_size).
+exploit_merge_radius_m: 20.0        # detections within this distance of an
+                                    # active exploit reinforce it instead of
+                                    # opening a second slot on the same event
+
+# ── Cross-Drone Target Registry ────────────────────────────────────────────
+# A persistent, swarm-wide list of physical targets. Detections of the
+# same class within `target_merge_radius_m` of an existing entry update
+# it instead of creating a new one — this is how a target seen by drone
+# A is recognised when drone B sees it later. See voronoi_coordinator.py
+# (TargetRegistry) for the implementation. Currently configured via CLI
+# args; these YAML keys document the defaults.
+target_merge_radius_m: 8.0          # cross-drone dedup radius (tighter than
+                                    # exploit_merge_radius_m because we want
+                                    # the registry to track individual
+                                    # targets, not event neighbourhoods)
+min_confirmations: 3                # detections needed before counting a
+                                    # candidate as a confirmed target —
+                                    # filters single-frame YOLO false positives
+
+# ── Explore-Mode Confirmed-Target Repulsion ────────────────────────────────
+# Inside `confirmed_repulsion_sigma_m` of any confirmed target the
+# explore-mode density collapses to baseline — confirmed targets are
+# treated as already-explored landmarks. Hard zero-out (not a Gaussian
+# subtraction) because exploit drones hovering on a stationary target
+# emit detections at multiple Hz and the bump grows unboundedly.
+# Exploit drones use formation waypoints directly and ignore this.
+confirmed_repulsion_sigma_m: 25.0   # zero-out radius (m) around each
+                                    # confirmed target
+confirmed_repulsion_weight: 1.0     # any value >0 enables hard zero-out
+                                    # AND density-write suppression for
+                                    # confirmed targets (so bumps can't
+                                    # keep growing past the zero-out
+                                    # radius). Set to 0 to disable both
+                                    # — ablation mode that restores
+                                    # write-every-detection behaviour.
+
+# ── Per-Target Exploit Cooldown ────────────────────────────────────────────
+# When an exploit ends, the matching confirmed target is put in cooldown
+# for `cooldown_after_exploit_s` — fresh detections on it are ignored
+# during that window so the swarm actually has time to explore elsewhere
+# instead of immediately retriggering on a still-visible target.
+cooldown_after_exploit_s: 60.0      # seconds; 0 disables the cooldown
+
+# ── Completion Trigger ─────────────────────────────────────────────────────
+# When the run hits one of these, the coordinator publishes
+# /adaptive/complete (latched Bool, same contract as /lawnmower/complete)
+# and shuts down. The data logger stops on either topic. This makes
+# adaptive's mission energy directly comparable to lawnmower's.
+expected_targets: null              # if set, complete when this many targets
+                                    # are confirmed. run_experiment.sh passes
+                                    # the trial's --targets count via CLI.
+completion_quiet_period_s: 0.0      # if >0, also complete after this many
+                                    # seconds without a new confirmation
+                                    # (heuristic stopping for unknown N)
 
 # ── Detection Publisher ────────────────────────────────────────────────────
 detection_confidence: 0.15   # YOLO confidence threshold

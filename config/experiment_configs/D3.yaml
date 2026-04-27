@@ -1,0 +1,34 @@
+# D3 — Dense dynamic event response (replaces legacy E3)
+#
+# Answers RQ-D3: does adaptive coverage hold up when events arrive faster
+# than a single exploit can retire? With 6 events in 200 s (mean spacing
+# ~30 s) and exploit_timeout_s = 30 s, two events will frequently overlap.
+# This is where `max_concurrent_exploits = 2` earns its keep.
+#
+# Class sequence cycles person→vehicle→fire so each formation fires twice
+# and the per-event latency distribution has 18 samples per method
+# (6 events × 3 trials). Figure 4 bins by event index (1–6) so reviewers
+# can see the handoff behavior across the mission.
+
+id: D3
+description: Dense staggered events at 3 drones
+research_question: RQ-D3
+target_mode: dynamic
+methods:
+  - adaptive
+  - lawnmower
+swarm:
+  drones: 3
+  altitude_m: 60
+  area_size_m: 400
+targets:
+  schedule_s: [20, 45, 75, 105, 140, 175]
+  classes: [person, vehicle, fire, person, vehicle, fire]
+trial:
+  duration_s: 200
+  steady_state_window_s: 20
+trials_per_method: 3
+total_trials: 6
+output_subdir: data/logs/istras/D3
+seed_formula: "42 + trial_index"
+legacy_alias: E3

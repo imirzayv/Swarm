@@ -34,6 +34,7 @@ SKIP_SIM=false
 NO_DETECTIONS=false
 OUTPUT_BASE="$PROJECT_DIR/data/logs"
 TARGET_CLASSES="person,vehicle,fire"
+SCHEDULE=""        # if non-empty, comma-separated spawn times → dynamic spawning
 
 # ── Parse arguments ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -51,9 +52,16 @@ while [[ $# -gt 0 ]]; do
         --no-detections) NO_DETECTIONS=true; shift ;;
         --output-base) OUTPUT_BASE=$2; shift 2 ;;
         --classes)    TARGET_CLASSES=$2; shift 2 ;;
+        --schedule)   SCHEDULE=$2; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# When --schedule is provided, the spawn times drive the target count.
+if [ -n "$SCHEDULE" ]; then
+    IFS=',' read -ra _SCHED_TIMES <<< "$SCHEDULE"
+    NUM_TARGETS=${#_SCHED_TIMES[@]}
+fi
 
 EXPERIMENT_ID="${METHOD}_d${NUM_DRONES}_t${NUM_TARGETS}_trial$(printf '%02d' $TRIAL)"
 OUTPUT_DIR="$OUTPUT_BASE/$EXPERIMENT_ID"
@@ -90,6 +98,8 @@ cleanup() {
     pkill -f "all_converge.py" 2>/dev/null || true
     pkill -f "pso_coverage.py" 2>/dev/null || true
     pkill -f "apf_coverage.py" 2>/dev/null || true
+    pkill -f "spawn_targets.sh.*$EXPERIMENT_ID" 2>/dev/null || true
+    pkill -f "spawn_targets.sh.*--schedule" 2>/dev/null || true
     echo "Cleanup done."
 }
 trap cleanup EXIT
@@ -137,16 +147,23 @@ gnome-terminal --title="EXP-CamBridge" -- bash -c "
 sleep 5
 
 # ── Step 3: Spawn targets ───────────────────────────────────────────────────
-echo "[3/6] Spawning $NUM_TARGETS targets (classes: $TARGET_CLASSES) inside ${AREA_SIZE}m area..."
-bash "$SCRIPT_DIR/spawn_targets.sh" \
-    --world "$GZ_WORLD" \
-    --count "$NUM_TARGETS" \
-    --classes "$TARGET_CLASSES" \
-    --random \
-    --seed "$SEED" \
-    --area-size "$AREA_SIZE" \
-    --output-csv "$OUTPUT_DIR/targets.csv"
-sleep 2
+# In static mode all targets appear before the drones take off. In schedule
+# mode the spawns are deferred until just before the data logger starts so
+# their wall-clock times line up with the trial timeline.
+if [ -z "$SCHEDULE" ]; then
+    echo "[3/6] Spawning $NUM_TARGETS targets (classes: $TARGET_CLASSES) inside ${AREA_SIZE}m area..."
+    bash "$SCRIPT_DIR/spawn_targets.sh" \
+        --world "$GZ_WORLD" \
+        --count "$NUM_TARGETS" \
+        --classes "$TARGET_CLASSES" \
+        --random \
+        --seed "$SEED" \
+        --area-size "$AREA_SIZE" \
+        --output-csv "$OUTPUT_DIR/targets.csv"
+    sleep 2
+else
+    echo "[3/6] Deferring target spawning — schedule [$SCHEDULE] runs alongside the data logger"
+fi
 
 # ── Step 4: Waypoint executor ───────────────────────────────────────────────
 echo "[4/6] Starting waypoint executor..."
@@ -171,13 +188,27 @@ sleep 3
 # ── Step 6: Controller + Logger ─────────────────────────────────────────────
 echo "[6/6] Starting $METHOD controller + data logger (${DURATION}s)..."
 
+# Per-method data-logger duration. Lawnmower overrides this below to a
+# safety cap because it stops on /lawnmower/complete, not on a wall clock.
+LOGGER_DURATION="$DURATION"
+
 # Start the controller based on method
 case $METHOD in
     adaptive)
+        # Adaptive runs until /adaptive/complete fires (all expected
+        # targets confirmed by the registry). The user-provided
+        # --duration only acts as a safety cap on the data logger,
+        # mirroring how lawnmower works.
+        LOGGER_DURATION=$(python3 -c "print(int(max(1500, 4 * $DURATION)))")
+        echo "  Adaptive: run-until-complete (safety cap ${LOGGER_DURATION}s, expected_targets=$NUM_TARGETS)"
         gnome-terminal --title="EXP-Controller" -- bash -c "
             $SETUP_CMD
             cd '$PROJECT_DIR'
-            python3 scripts/voronoi_coordinator.py --drones $DRONE_IDS --area-size $AREA_SIZE --altitude $ALTITUDE
+            python3 scripts/voronoi_coordinator.py \
+                --drones $DRONE_IDS \
+                --area-size $AREA_SIZE \
+                --altitude $ALTITUDE \
+                --expected-targets $NUM_TARGETS
             exec bash
         "
         ;;
@@ -190,6 +221,20 @@ case $METHOD in
         "
         ;;
     lawnmower)
+        # Lawnmower ignores the user-provided --duration and instead runs
+        # until every drone finishes its FOV-sized sweep pattern. The logger
+        # stops on /lawnmower/complete; the value below is only a safety cap
+        # (~4x the analytic estimate, minimum 20 min) to guard against hangs.
+        LOGGER_DURATION=$(python3 -c "
+import math
+a, h, s = $AREA_SIZE, $ALTITUDE, 5.0
+hfov = 1.74
+footprint = 2*h*math.tan(hfov/2)*0.95
+n_sweeps = max(1, math.ceil((a/$NUM_DRONES) / footprint))
+length = n_sweeps*a + max(0, n_sweeps-1)*footprint
+print(int(max(1200, 4 * (h + length/s))))
+")
+        echo "  Lawnmower: run-until-complete (safety cap ${LOGGER_DURATION}s)"
         gnome-terminal --title="EXP-Controller" -- bash -c "
             $SETUP_CMD
             cd '$PROJECT_DIR'
@@ -249,15 +294,36 @@ case $METHOD in
 esac
 sleep 2
 
+# In schedule mode, kick off the deferred spawner now so its t=0 lines up
+# with the data logger's t=0. Track the PID so cleanup can reap it.
+SPAWN_BG_PID=""
+if [ -n "$SCHEDULE" ]; then
+    echo "Launching scheduled target spawner [$SCHEDULE] in background..."
+    bash "$SCRIPT_DIR/spawn_targets.sh" \
+        --world "$GZ_WORLD" \
+        --schedule "$SCHEDULE" \
+        --classes "$TARGET_CLASSES" \
+        --seed "$SEED" \
+        --area-size "$AREA_SIZE" \
+        --output-csv "$OUTPUT_DIR/targets.csv" &
+    SPAWN_BG_PID=$!
+fi
+
 # Start data logger with duration limit (will auto-stop)
 eval "$SETUP_CMD"
 cd "$PROJECT_DIR"
-echo "Logging for ${DURATION}s → $OUTPUT_DIR"
+echo "Logging for ${LOGGER_DURATION}s → $OUTPUT_DIR"
 python3 scripts/data_logger.py \
     --drones $DRONE_IDS \
     --experiment-id "$EXPERIMENT_ID" \
     --output-base "$OUTPUT_BASE" \
-    --duration "$DURATION"
+    --duration "$LOGGER_DURATION"
+
+# Reap the background spawner so a partial schedule doesn't leak.
+if [ -n "$SPAWN_BG_PID" ]; then
+    kill "$SPAWN_BG_PID" 2>/dev/null || true
+    wait "$SPAWN_BG_PID" 2>/dev/null || true
+fi
 
 # ── Compute metrics ──────────────────────────────────────────────────────────
 echo ""

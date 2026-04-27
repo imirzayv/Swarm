@@ -1,0 +1,30 @@
+# E3 — Dense, staggered dynamic event response
+#
+# Answers SQ3: when targets arrive dynamically, how quickly does each
+# strategy respond? Six events at non-uniform spacing amplify the
+# response-time gap between adaptive (which reallocates immediately on
+# detection) and lawnmower (which has to physically sweep to the target).
+#
+# The class sequence cycles person → vehicle → fire so each class fires
+# twice and triggers its formation twice within the trial.
+
+id: E3
+description: Dense dynamic event stream — adaptive vs lawnmower at 3 drones
+research_question: SQ3
+methods:
+  - adaptive
+  - lawnmower
+swarm:
+  drones: 3
+  altitude_m: 10
+  area_size_m: 40
+targets:
+  schedule_s: [15, 30, 45, 60, 90, 120]
+  classes: [person, vehicle, fire, person, vehicle, fire]
+trial:
+  duration_s: 150
+  steady_state_window_s: 15
+trials_per_method: 3
+total_trials: 6
+output_subdir: data/logs/istras/E3
+seed_formula: "42 + trial_index"

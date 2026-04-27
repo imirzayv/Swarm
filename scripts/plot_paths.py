@@ -149,8 +149,8 @@ def draw_targets(ax, targets, legend_handles):
         for tx, ty, tname in entries:
             ax.annotate(
                 tname, (tx, ty),
-                textcoords="offset points", xytext=(0, -14),
-                fontsize=7, ha="center", color="#333333",
+                textcoords="offset points", xytext=(0, -28),
+                fontsize=14, ha="center", color="#333333",
             )
         label = f"Target ({cls})" if cls else "Target (truth)"
         legend_handles.append(plt.Line2D(
@@ -242,9 +242,10 @@ def plot_drone_paths(
     ax.set_xlim(xmin, xmax)
     ax.set_ylim(ymin, ymax)
     ax.set_aspect("equal")
-    ax.set_xlabel("X (m)", fontsize=12)
-    ax.set_ylabel("Y (m)", fontsize=12)
-    ax.set_title(title or "Drone Flight Paths", fontsize=14)
+    ax.set_xlabel("X (m)", fontsize=24)
+    ax.set_ylabel("Y (m)", fontsize=24)
+    ax.set_title(title or "Drone Flight Paths", fontsize=28)
+    ax.tick_params(axis="both", labelsize=20)
     ax.grid(True, alpha=0.3)
     ax.set_facecolor("#f5f5f5")
 
@@ -309,7 +310,7 @@ def plot_drone_paths(
     ))
 
     ax.legend(handles=legend_handles, loc="upper left",
-              bbox_to_anchor=(1.02, 1.0), fontsize=10, framealpha=0.9,
+              bbox_to_anchor=(1.02, 1.0), fontsize=20, framealpha=0.9,
               borderaxespad=0)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
@@ -389,10 +390,11 @@ def plot_voronoi_partitions(
     ax.set_xlim(-half - 3, half + 3)
     ax.set_ylim(-half - 3, half + 3)
     ax.set_aspect("equal")
-    ax.set_xlabel("X (m)", fontsize=12)
-    ax.set_ylabel("Y (m)", fontsize=12)
+    ax.set_xlabel("X (m)", fontsize=24)
+    ax.set_ylabel("Y (m)", fontsize=24)
     time_label = f" (t={snapshot_time:.0f}s)" if snapshot_time is not None else ""
-    ax.set_title(title or f"Voronoi Partitions{time_label}", fontsize=14)
+    ax.set_title(title or f"Voronoi Partitions{time_label}", fontsize=28)
+    ax.tick_params(axis="both", labelsize=20)
     ax.grid(True, alpha=0.3)
     ax.set_facecolor("#f5f5f5")
 
@@ -429,7 +431,7 @@ def plot_voronoi_partitions(
         ax.annotate(
             f"D{did}", (px, py),
             textcoords="offset points", xytext=(0, 12),
-            fontsize=10, fontweight="bold", ha="center", color=color,
+            fontsize=20, fontweight="bold", ha="center", color=color,
             zorder=6
         )
 
@@ -442,7 +444,7 @@ def plot_voronoi_partitions(
     draw_targets(ax, targets, legend_handles)
 
     ax.legend(handles=legend_handles, loc="upper left",
-              bbox_to_anchor=(1.02, 1.0), fontsize=10, framealpha=0.9,
+              bbox_to_anchor=(1.02, 1.0), fontsize=20, framealpha=0.9,
               borderaxespad=0)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
@@ -479,9 +481,10 @@ def plot_lawnmower_strips(
     ax.set_xlim(-half - 3, half + 3)
     ax.set_ylim(-half - 3, half + 3)
     ax.set_aspect("equal")
-    ax.set_xlabel("X (m)", fontsize=12)
-    ax.set_ylabel("Y (m)", fontsize=12)
-    ax.set_title(title or "Lawnmower Strip Assignments", fontsize=14)
+    ax.set_xlabel("X (m)", fontsize=24)
+    ax.set_ylabel("Y (m)", fontsize=24)
+    ax.set_title(title or "Lawnmower Strip Assignments", fontsize=28)
+    ax.tick_params(axis="both", labelsize=20)
     ax.grid(True, alpha=0.3)
     ax.set_facecolor("#f5f5f5")
 
@@ -511,7 +514,7 @@ def plot_lawnmower_strips(
         strip_cx = strip_x_min + strip_width / 2
         ax.annotate(
             f"D{did}", (strip_cx, 0),
-            fontsize=12, fontweight="bold", ha="center", va="center",
+            fontsize=24, fontweight="bold", ha="center", va="center",
             color=color, zorder=6,
         )
 
@@ -533,7 +536,7 @@ def plot_lawnmower_strips(
     draw_targets(ax, targets, legend_handles)
 
     ax.legend(handles=legend_handles, loc="upper left",
-              bbox_to_anchor=(1.02, 1.0), fontsize=10, framealpha=0.9,
+              bbox_to_anchor=(1.02, 1.0), fontsize=20, framealpha=0.9,
               borderaxespad=0)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
@@ -574,10 +577,11 @@ def plot_force_field(
     ax.set_xlim(-half - 3, half + 3)
     ax.set_ylim(-half - 3, half + 3)
     ax.set_aspect("equal")
-    ax.set_xlabel("X (m)", fontsize=12)
-    ax.set_ylabel("Y (m)", fontsize=12)
+    ax.set_xlabel("X (m)", fontsize=24)
+    ax.set_ylabel("Y (m)", fontsize=24)
     time_label = f" (t={snapshot_time:.0f}s)" if snapshot_time is not None else ""
-    ax.set_title(title or f"APF Force Field{time_label}", fontsize=14)
+    ax.set_title(title or f"APF Force Field{time_label}", fontsize=28)
+    ax.tick_params(axis="both", labelsize=20)
     ax.grid(True, alpha=0.3)
     ax.set_facecolor("#f5f5f5")
 
@@ -637,7 +641,7 @@ def plot_force_field(
                 markeredgecolor="black", markeredgewidth=1.5, zorder=5)
         ax.annotate(f"D{did}", (ox, oy),
                     textcoords="offset points", xytext=(0, 12),
-                    fontsize=10, fontweight="bold", ha="center", color=color,
+                    fontsize=20, fontweight="bold", ha="center", color=color,
                     zorder=6)
 
         legend_handles.append(
@@ -657,7 +661,7 @@ def plot_force_field(
     draw_targets(ax, targets, legend_handles)
 
     ax.legend(handles=legend_handles, loc="upper left",
-              bbox_to_anchor=(1.02, 1.0), fontsize=10, framealpha=0.9,
+              bbox_to_anchor=(1.02, 1.0), fontsize=20, framealpha=0.9,
               borderaxespad=0)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
@@ -689,9 +693,10 @@ def plot_pso_vectors(
     ax.set_xlim(-half - 3, half + 3)
     ax.set_ylim(-half - 3, half + 3)
     ax.set_aspect("equal")
-    ax.set_xlabel("X (m)", fontsize=12)
-    ax.set_ylabel("Y (m)", fontsize=12)
-    ax.set_title(title or "PSO Particle Trajectories with Velocity Vectors", fontsize=14)
+    ax.set_xlabel("X (m)", fontsize=24)
+    ax.set_ylabel("Y (m)", fontsize=24)
+    ax.set_title(title or "PSO Particle Trajectories with Velocity Vectors", fontsize=28)
+    ax.tick_params(axis="both", labelsize=20)
     ax.grid(True, alpha=0.3)
     ax.set_facecolor("#f5f5f5")
 
@@ -772,7 +777,7 @@ def plot_pso_vectors(
     draw_targets(ax, targets, legend_handles)
 
     ax.legend(handles=legend_handles, loc="upper left",
-              bbox_to_anchor=(1.02, 1.0), fontsize=10, framealpha=0.9,
+              bbox_to_anchor=(1.02, 1.0), fontsize=20, framealpha=0.9,
               borderaxespad=0)
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)

@@ -1,0 +1,30 @@
+# E2 — Scalability to 5 drones
+#
+# Answers SQ2: how does the adaptive advantage change as the swarm grows
+# from 3 to 5 drones? Static grid is intentionally cut here — its scaling
+# story is uninteresting (just more idle hovering) and re-running it would
+# add five trials without new insight.
+#
+# Compare against E1 adaptive/lawnmower at 3 drones to plot the scaling
+# curve in the paper's Figure 3.
+
+id: E2
+description: Scalability — adaptive vs lawnmower at 5 drones
+research_question: SQ2
+methods:
+  - adaptive
+  - lawnmower
+swarm:
+  drones: 5
+  altitude_m: 10
+  area_size_m: 40
+targets:
+  schedule_s: [20, 50, 80]
+  classes: [person, vehicle, fire]
+trial:
+  duration_s: 150
+  steady_state_window_s: 20
+trials_per_method: 5
+total_trials: 10
+output_subdir: data/logs/istras/E2
+seed_formula: "42 + trial_index"

@@ -1,0 +1,32 @@
+# S2 — Static scaling to 5 drones
+#
+# Answers RQ-S2: does adaptive coverage's advantage over lawnmower scale
+# sub-linearly (good), linearly, or super-linearly with swarm size? The
+# expected pattern: adaptive tightens its coverage density where targets
+# cluster and saves distance; lawnmower just paints more lanes.
+#
+# Static baseline (grid) is cut — more idle hovering with more drones is
+# uninteresting. Drone count is the only variable that changes vs S1.
+
+id: S2
+description: Static scaling to 5 drones, 8 fixed targets, no schedule
+research_question: RQ-S2
+target_mode: static
+methods:
+  - adaptive
+  - lawnmower
+swarm:
+  drones: 5
+  altitude_m: 60
+  area_size_m: 400
+targets:
+  count: 8
+  classes: [person, vehicle, fire]
+  schedule_s: []
+trial:
+  duration_s: 200
+  steady_state_window_s: 0
+trials_per_method: 5
+total_trials: 10
+output_subdir: data/logs/istras/S2
+seed_formula: "42 + trial_index"

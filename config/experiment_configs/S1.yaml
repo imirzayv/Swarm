@@ -1,0 +1,36 @@
+# S1 — Static head-to-head at 3 drones
+#
+# Answers RQ-S1: when the entire target field is present from t=0, does
+# adaptive coverage discover targets faster and cover the area more uniformly
+# than sweep/grid baselines? This isolates coverage efficiency from event
+# response — every method starts the mission with the same information
+# (nothing observed yet) but a fully-populated world.
+#
+# Comparison variable: coordination strategy. Everything else held constant.
+# Trials vary only by seed (target positions), so methods are matched-pair.
+#
+# Source-of-truth values are mirrored in scripts/run_all_experiments.sh.
+
+id: S1
+description: Static head-to-head at 3 drones, 8 fixed targets, no schedule
+research_question: RQ-S1
+target_mode: static
+methods:
+  - adaptive
+  - lawnmower
+  - static
+swarm:
+  drones: 3
+  altitude_m: 60
+  area_size_m: 400
+targets:
+  count: 8
+  classes: [person, vehicle, fire]   # round-robin: 3× person, 3× vehicle, 2× fire
+  schedule_s: []                     # empty ⇒ all spawn at t=0
+trial:
+  duration_s: 200
+  steady_state_window_s: 0           # N/A for static runs (no event phase)
+trials_per_method: 5
+total_trials: 15
+output_subdir: data/logs/istras/S1
+seed_formula: "42 + trial_index"

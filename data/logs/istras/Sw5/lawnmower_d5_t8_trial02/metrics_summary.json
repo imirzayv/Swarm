@@ -1,0 +1,143 @@
+{
+  "experiment_id": "lawnmower_d5_t8_trial02",
+  "duration_s": 391.5,
+  "area_size_m": 600.0,
+  "altitude_m": 40.0,
+  "n_drones": 5,
+  "coverage_percent": 8.26,
+  "redundancy_ratio": 0.089,
+  "total_distance_m": 8011.07,
+  "per_drone_distance_m": {
+    "1": 1655.51,
+    "2": 1592.03,
+    "3": 1561.7,
+    "4": 1572.31,
+    "5": 1629.51
+  },
+  "steady_state_distance_m": 370.0,
+  "event_phase_distance_m": 7641.07,
+  "steady_state_cutoff_s": 20.0,
+  "hover_power_w": 142.8,
+  "forward_power_w": 161.0,
+  "comm_power_w": 10.0,
+  "cruise_speed_ms": 5.0,
+  "hover_energy_wh": 77.647,
+  "forward_energy_wh": 8.1,
+  "comm_energy_wh": 5.438,
+  "energy_per_drone_wh": 18.237,
+  "total_energy_wh": 91.185,
+  "total_energy_kwh": 0.09119,
+  "co2_azerbaijan_g": 40.121,
+  "co2_eu_g": 22.796,
+  "min_pairwise_target_distance_m": 56.79,
+  "mean_pairwise_target_distance_m": 293.27,
+  "max_pairwise_target_distance_m": 515.88,
+  "total_detections": 1083,
+  "first_detection_s": 33.5,
+  "detections_per_drone": {
+    "1": 116,
+    "2": 119,
+    "5": 132,
+    "4": 504,
+    "3": 212
+  },
+  "unique_classes": [
+    "fire",
+    "person",
+    "vehicle"
+  ],
+  "targets_total": 8,
+  "targets_found": 8,
+  "time_to_first_target_s": 33.5,
+  "time_to_all_targets_s": 274.3,
+  "target_match_radius_m": 6.0,
+  "per_target_discovery": [
+    {
+      "name": "target_person_1",
+      "class": "person",
+      "spawn_t_s": 0.0,
+      "found": true,
+      "first_detection_s": 151.51,
+      "latency_s": 151.51
+    },
+    {
+      "name": "target_vehicle_2",
+      "class": "vehicle",
+      "spawn_t_s": 0.0,
+      "found": true,
+      "first_detection_s": 175.75,
+      "latency_s": 175.75
+    },
+    {
+      "name": "target_fire_3",
+      "class": "fire",
+      "spawn_t_s": 0.0,
+      "found": true,
+      "first_detection_s": 51.66,
+      "latency_s": 51.66
+    },
+    {
+      "name": "target_person_4",
+      "class": "person",
+      "spawn_t_s": 0.0,
+      "found": true,
+      "first_detection_s": 182.29,
+      "latency_s": 182.29
+    },
+    {
+      "name": "target_vehicle_5",
+      "class": "vehicle",
+      "spawn_t_s": 0.0,
+      "found": true,
+      "first_detection_s": 191.86,
+      "latency_s": 191.86
+    },
+    {
+      "name": "target_fire_6",
+      "class": "fire",
+      "spawn_t_s": 0.0,
+      "found": true,
+      "first_detection_s": 33.5,
+      "latency_s": 33.5
+    },
+    {
+      "name": "target_person_7",
+      "class": "person",
+      "spawn_t_s": 0.0,
+      "found": true,
+      "first_detection_s": 274.3,
+      "latency_s": 274.3
+    },
+    {
+      "name": "target_vehicle_8",
+      "class": "vehicle",
+      "spawn_t_s": 0.0,
+      "found": true,
+      "first_detection_s": 48.66,
+      "latency_s": 48.66
+    }
+  ],
+  "per_event_latency_s": [
+    151.51,
+    175.75,
+    51.66,
+    182.29,
+    191.86,
+    33.5,
+    274.3,
+    48.66
+  ],
+  "mean_event_latency_s": 138.691,
+  "median_event_latency_s": 163.63,
+  "max_event_latency_s": 274.3,
+  "schedule_aware": false,
+  "coverage_during_exploit": null,
+  "coverage_during_explore": null,
+  "exploit_duration_s": 0.0,
+  "num_exploit_events": 0,
+  "mean_reconfig_time_s": null,
+  "mean_publish_delay_s": null,
+  "min_reconfig_time_s": null,
+  "max_reconfig_time_s": null,
+  "num_reconfig_events": 0
+}

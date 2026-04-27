@@ -1,0 +1,33 @@
+# D1 — Dynamic head-to-head at 3 drones (replaces legacy E1)
+#
+# Answers RQ-D1: on dynamically-spawned events, does adaptive coverage
+# produce lower event-response latency (spawn → first detection) than
+# sweep/grid baselines at the same swarm size?
+#
+# Mission layout: 200 s. 0–25 s steady-state (no events, baseline coverage
+# only). Events fire at 25, 85, 145 s — roughly uniform spacing. Class
+# sequence person→vehicle→fire exercises all three formations once.
+
+id: D1
+description: Dynamic head-to-head at 3 drones with three coordination strategies
+research_question: RQ-D1
+target_mode: dynamic
+methods:
+  - adaptive
+  - lawnmower
+  - static
+swarm:
+  drones: 3
+  altitude_m: 60
+  area_size_m: 400
+targets:
+  schedule_s: [25, 85, 145]
+  classes: [person, vehicle, fire]
+trial:
+  duration_s: 200
+  steady_state_window_s: 25   # 0–25 s is event-free
+trials_per_method: 5
+total_trials: 15
+output_subdir: data/logs/istras/D1
+seed_formula: "42 + trial_index"
+legacy_alias: E1
